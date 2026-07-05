@@ -507,15 +507,17 @@ function updateGestures() {
   gesturesEl.textContent = `${click}  ·  drag: pilot live  ·  right-click: place/remove sensor`;
 }
 
-// While the max-alt slider is being adjusted, the map shows which terrain the
-// drone can't clear (ground + drone h > ceiling) so routes can be designed
-// around the walls; the preview fades ~1.2 s after the last adjustment.
-let ceilPreviewUntil = 0, ceilTimer = 0;
+// Ceiling preview: the map shows which terrain the drone can't clear
+// (ground + drone h > ceiling) while the max-alt control is hovered, and the
+// preview pins after a value change so routes can be designed against the
+// walls - until the next map interaction (click/drag/sensor) or launch.
+let ceilHover = false, ceilSticky = false;
+const maxAltLabel = maxAltEl.closest('label');
+maxAltLabel.addEventListener('mouseenter', () => { ceilHover = true; render(); });
+maxAltLabel.addEventListener('mouseleave', () => { ceilHover = false; render(); });
 maxAltEl.addEventListener('input', () => {
   maxAltValEl.textContent = maxAltEl.value + ' m';
-  ceilPreviewUntil = performance.now() + 1200;
-  clearTimeout(ceilTimer);
-  ceilTimer = setTimeout(render, 1250); // one-shot re-render to clear the preview
+  ceilSticky = true;
   render();
 });
 const seen = new Uint8Array(N * N); // cells visible at least once this flight
@@ -628,9 +630,9 @@ function render() {
   }
   const OV = 0.42, OVS = 0.30; // overlay opacity: current viewshed / coverage trail
   const showSeen = drone && coverEl.checked;
-  // Ceiling preview (while the max-alt slider is being adjusted): mark the
+  // Ceiling preview (slider hovered, or pinned after a change): mark the
   // walls the drone can't clear in purple, on top of everything else.
-  const showCeil = drone && performance.now() < ceilPreviewUntil;
+  const showCeil = drone && (ceilHover || ceilSticky);
   const ceilAlt = +maxAltEl.value || 0, ceilH = +hObsEl.value || 0;
   const d = img.data;
   for (let i = 0; i < N * N; i++) {
@@ -814,6 +816,7 @@ function resetFlight() {
 }
 function startFlight() {
   cancelFlight();
+  ceilSticky = false; // launching supersedes the pinned ceiling preview
   const hObs = +hObsEl.value || 0;
   // The ceiling can never exclude the endpoints: raise it to whatever the
   // higher of A and B needs (the user-requested lower limit).
@@ -906,6 +909,7 @@ let downPx = null, didDrag = false;
 
 cv.addEventListener('pointerdown', e => {
   if (e.button !== 0) return; // right-click is the sensor gesture
+  ceilSticky = false;         // map interaction dismisses the pinned preview
   downPx = { x: e.clientX, y: e.clientY };
   didDrag = false;
   cv.setPointerCapture(e.pointerId);
@@ -913,6 +917,7 @@ cv.addEventListener('pointerdown', e => {
 // Right-click places a sensor mast; right-click near an existing one removes it.
 cv.addEventListener('contextmenu', e => {
   e.preventDefault();
+  ceilSticky = false;
   const c = cellAt(e);
   if (!c) return;
   const i = sensors.findIndex(s => Math.hypot(s.x - c.x, s.y - c.y) <= 2);
