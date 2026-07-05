@@ -12,6 +12,8 @@
   input[type=number] { width: 72px; }
   /* drone-only controls hide in other modes */
   body:not([data-mode=drone]) .drone-only { display: none; }
+  /* sensor controls appear once the first sensor is placed */
+  body:not(.has-sensors) .sensor-only { display: none; }
   .stage { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
   canvas#cv { image-rendering: pixelated; border: 1px solid #444; cursor: crosshair; touch-action: none; }
   #side { display: flex; flex-direction: column; gap: 14px; font-size: 12px; max-width: 220px; }
@@ -57,6 +59,8 @@
     <label class="drone-only" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need)">Max alt (m) <input id="maxAlt" type="number" value="180" step="10"></label>
     <label class="drone-only" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
     <button id="replay" type="button" class="drone-only" title="Re-fly the current A&rarr;B path">replay flight</button>
+    <label class="sensor-only" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch">Sensor h (m) <input id="sensorH" type="number" value="10" step="1"></label>
+    <button id="clearSn" type="button" class="sensor-only">clear sensors</button>
     <button id="clear" type="button">clear observer</button>
   </div>
 </div>
@@ -98,9 +102,11 @@
   In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
   <b>Exposure mode</b> inverts the question: click a target and the green overlay shows every cell an
   observer (at observer height) could see it from.
-  <b>Sensors</b>: right-click places/removes a 10&nbsp;m sensor mast (yellow triangle). With sensors
-  present, planned flights prefer terrain the sensors can't see; exposed route legs draw red and the
-  stats show the exposed share. Sensors persist until the terrain changes or "clear observer".
+  <b>Sensors</b>: right-click places/removes a sensor mast (yellow triangle; height adjustable via
+  the "Sensor h" input that appears with the first mast). A mast turns <b>red</b> while it currently
+  has a clear sight line to the observer/drone/target. With sensors present, planned flights prefer
+  terrain the sensors can't see; exposed route legs draw red and the stats show the exposed share.
+  Sensors persist until the terrain changes or "clear sensors".
 </details>
 
 <script id="core">
@@ -250,6 +256,28 @@ function computeViewshed(z, ox, oy, hObs, hTgt, maxRange) {
     }
   }
   return vis;
+}
+
+// Single-ray LOS test between two arbitrary points, using the exact sampling
+// rules of computeViewshed (0.5-cell steps, curvature drop d^2/2R_EFF, EPS,
+// half-cell target standoff) so per-ray checks always agree with the field.
+function losVisible(z, x0, y0, h0, x1, y1, h1, maxRange) {
+  const dx = x1 - x0, dy = y1 - y0;
+  const distCells = Math.hypot(dx, dy);
+  const d = distCells * CELL;
+  if (d > maxRange) return false;
+  if (distCells === 0) return true;
+  const zEye = elevAt(z, x0, y0) + h0;
+  const zT = elevAt(z, x1, y1) + h1 - d * d / (2 * R_EFF);
+  const tgtSlope = (zT - zEye) / d;
+  const STEP = 0.5, EPS = 1e-9;
+  for (let s = 1; s * STEP < distCells - 0.5; s++) {
+    const t = (s * STEP) / distCells;
+    const sd = s * STEP * CELL;
+    const zi = elevAt(z, x0 + dx * t, y0 + dy * t) - sd * sd / (2 * R_EFF);
+    if ((zi - zEye) / sd > tgtSlope + EPS) return false;
+  }
+  return true;
 }
 
 // ---- drone route planning ----
@@ -424,6 +452,8 @@ const seedEl = document.getElementById('seed');
 const diceEl = document.getElementById('dice');
 const modeEl = document.getElementById('mode');
 const maxAltEl = document.getElementById('maxAlt');
+const sensorHEl = document.getElementById('sensorH');
+const clearSnEl = document.getElementById('clearSn');
 const coverEl = document.getElementById('cover');
 const replayEl = document.getElementById('replay');
 
@@ -444,9 +474,12 @@ let lastTick = 0;                   // wall-clock time of the previous frame
 let flightPath = null;              // planned waypoints [{x,y,exp},...] from findPath
 let cumLen = [0], totalLen = 0;     // cumulative segment lengths (cells)
 let ceilNote = '';                  // stats note when the ceiling was auto-raised
-let sensors = [];                   // [{x,y}] 10 m masts placed by right-click
+let sensors = [];                   // [{x,y}] sensor masts placed by right-click
 let expFrac = null;                 // exposed fraction of the planned route
-const SENSOR_H = 10;                // sensor mast eye height, meters
+// Sensor controls only show once a sensor exists; keep the flag in sync.
+function updateSensorUI() {
+  document.body.classList.toggle('has-sensors', sensors.length > 0);
+}
 const seen = new Uint8Array(N * N); // cells visible at least once this flight
 const DRONE_SPEED = 15;             // ground speed, cells/s (450 m/s map speed)
 const MIN_FLIGHT_S = 4, MAX_FLIGHT_S = 20; // duration clamp for tiny/huge paths
@@ -603,13 +636,19 @@ function render() {
       ctx.fillStyle = '#fff'; ctx.fillText(name, x, y - 13);
     }
   }
-  for (const sn of sensors) { // sensor masts: yellow triangles
+  // Sensor masts: yellow triangles, turning red while they currently have a
+  // clear sight line to the marker (drone/observer at hObs, target at hTgt).
+  // One ray per sensor per frame - negligible next to the viewshed.
+  const markerH = inverse ? (+hTgtEl.value || 0) : (+hObsEl.value || 0);
+  const snH = +sensorHEl.value || 0;
+  for (const sn of sensors) {
+    const sees = obs && losVisible(z, sn.x, sn.y, snH, obs.x, obs.y, markerH, +rangeEl.value || 0);
     const [x, y] = px(sn);
     ctx.beginPath();
     ctx.moveTo(x, y - 6); ctx.lineTo(x - 5, y + 4); ctx.lineTo(x + 5, y + 4);
     ctx.closePath();
     ctx.lineWidth = 2.5; ctx.strokeStyle = '#000'; ctx.stroke();
-    ctx.fillStyle = '#ffd23f'; ctx.fill();
+    ctx.fillStyle = sees ? '#ff5346' : '#ffd23f'; ctx.fill();
   }
   if (obs) { // observer / drone marker (fractional coords mid-flight)
     const [mx, my] = px(obs);
@@ -741,7 +780,7 @@ function startFlight() {
   if (sensors.length) {
     exposure = new Uint8Array(N * N);
     for (const sn of sensors) {
-      const v = computeViewshed(z, sn.x, sn.y, SENSOR_H, hObs, +rangeEl.value || 0);
+      const v = computeViewshed(z, sn.x, sn.y, +sensorHEl.value || 0, hObs, +rangeEl.value || 0);
       for (let i = 0; i < N * N; i++) if (v[i] === 1) exposure[i] = 1;
     }
   }
@@ -832,6 +871,7 @@ cv.addEventListener('contextmenu', e => {
   if (!c) return;
   const i = sensors.findIndex(s => Math.hypot(s.x - c.x, s.y - c.y) <= 2);
   if (i >= 0) sensors.splice(i, 1); else sensors.push(c);
+  updateSensorUI();
   render();
 });
 cv.addEventListener('pointermove', e => {
@@ -884,9 +924,12 @@ function clearAll() {
   obs = null;
   render();
 }
-// The button is a full reset (sensors included); a stray click outside the
-// map (below) clears only the observer/flight and leaves sensors standing.
-clearEl.addEventListener('click', () => { sensors = []; clearAll(); });
+clearEl.addEventListener('click', clearAll); // observer/flight only
+clearSnEl.addEventListener('click', () => {
+  sensors = [];
+  updateSensorUI();
+  render();
+});
 // Clicking off the map (empty page, title, hint) also clears the observer /
 // flight. The canvas places the observer, and the controls/legend relate to
 // it, so clicks landing there are excluded to keep those interactions
@@ -918,6 +961,7 @@ coverEl.addEventListener('change', render);
 function regen() {
   resetFlight();                          // terrain changes under the path
   sensors = [];                           // and under the masts
+  updateSensorUI();
   if (modeEl.value === 'drone') obs = null;
   setTerrain(presetEl.value, Math.trunc(+seedEl.value) || 1);
   render();
@@ -929,7 +973,7 @@ diceEl.addEventListener('click', () => {
   regen();
 });
 tintEl.addEventListener('change', render);
-for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
+for (const el of [hObsEl, hTgtEl, rangeEl, sensorHEl]) el.addEventListener('input', render);
 
 // ---- shareable scenario URLs ----
 // Full scenario state lives in the hash, so the current terrain + flight can
@@ -940,7 +984,7 @@ function queueHash() { clearTimeout(hashTimer); hashTimer = setTimeout(syncHash,
 function syncHash() {
   const p = ['p=' + presetEl.value, 's=' + seedEl.value, 'm=' + modeEl.value,
              'h=' + hObsEl.value, 't=' + hTgtEl.value, 'r=' + rangeEl.value,
-             'a=' + maxAltEl.value,
+             'a=' + maxAltEl.value, 'sh=' + sensorHEl.value,
              'c=' + (tintEl.checked ? 1 : 0) + (coverEl.checked ? 1 : 0)];
   if (sensors.length) p.push('sn=' + sensors.map(s => s.x + ',' + s.y).join(';'));
   if (ptA) p.push('A=' + ptA.x + ',' + ptA.y);
@@ -970,6 +1014,7 @@ function loadHash() {
   if (q.t !== undefined) hTgtEl.value = q.t;
   if (q.r !== undefined) rangeEl.value = q.r;
   if (q.a !== undefined) maxAltEl.value = q.a;
+  if (q.sh !== undefined) sensorHEl.value = q.sh;
   if (q.c) { tintEl.checked = q.c[0] !== '0'; coverEl.checked = q.c[1] === '1'; }
   if (q.sn) sensors = q.sn.split(';').map(s => pt(s, true)).filter(Boolean);
   return {
@@ -980,6 +1025,7 @@ function loadHash() {
 }
 
 const restored = loadHash();
+updateSensorUI();
 document.body.dataset.mode = modeEl.value;
 document.getElementById('visLegend').textContent =
   modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
