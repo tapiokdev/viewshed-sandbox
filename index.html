@@ -5,15 +5,26 @@
 <title>Terrain Viewshed Analyzer</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 16px; background: #1b1b1f; color: #ddd; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
   #controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
   label { font-size: 13px; }
   input[type=number] { width: 72px; }
-  canvas { image-rendering: pixelated; border: 1px solid #444; cursor: crosshair; }
+  .stage { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  canvas#cv { image-rendering: pixelated; border: 1px solid #444; cursor: crosshair; touch-action: none; }
+  #side { display: flex; flex-direction: column; gap: 14px; font-size: 12px; max-width: 220px; }
+  .legend h3 { font-size: 12px; margin: 0 0 6px; color: #bbb; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .ramp { display: flex; align-items: center; gap: 8px; }
+  #rampBar { width: 130px; height: 12px; border: 1px solid #555; border-radius: 2px; }
+  .rampLabels { display: flex; justify-content: space-between; width: 130px; color: #999; margin-top: 2px; }
+  .swatches { display: grid; grid-template-columns: 14px 1fr; gap: 5px 8px; align-items: center; margin-top: 4px; }
+  .sw { width: 14px; height: 14px; border-radius: 2px; border: 1px solid #0004; }
+  #readout { font-size: 12px; color: #9bd; min-height: 1.2em; font-variant-numeric: tabular-nums; }
   #stats { font-size: 13px; color: #9c9; min-height: 1.2em; margin-top: 8px; }
-  #hint { font-size: 12px; color: #888; max-width: 600px; margin-top: 6px; line-height: 1.4; }
+  #hint { font-size: 12px; color: #888; max-width: 620px; margin-top: 6px; line-height: 1.4; }
 </style>
 </head>
 <body>
+<h1>Terrain Viewshed Analyzer</h1>
 <div id="controls">
   <label>Terrain <select id="preset">
     <option value="hills" selected>hills</option>
@@ -23,8 +34,28 @@
   <label>Observer h (m) <input id="hObs" type="number" value="2" step="0.5"></label>
   <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
   <label>Max range (m) <input id="range" type="number" value="9000" step="500"></label>
+  <label title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> elevation color</label>
+  <button id="clear" type="button">clear observer</button>
 </div>
-<canvas id="cv" width="600" height="600"></canvas>
+<div class="stage">
+  <canvas id="cv" width="600" height="600"></canvas>
+  <div id="side">
+    <div id="readout">Hover the map to read elevation.</div>
+    <div class="legend">
+      <h3>Elevation</h3>
+      <div class="ramp"><canvas id="rampBar" width="130" height="12"></canvas></div>
+      <div class="rampLabels"><span id="rampLo">0 m</span><span id="rampHi">0 m</span></div>
+    </div>
+    <div class="legend">
+      <h3>Viewshed</h3>
+      <div class="swatches">
+        <span class="sw" style="background:#46d75a"></span><span>visible from observer</span>
+        <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
+        <span class="sw" style="background:#888"></span><span>beyond max range</span>
+      </div>
+    </div>
+  </div>
+</div>
 <div id="stats">Click the map to place the observer.</div>
 <div id="hint">
   Verification: <b>flat plane</b> &rarr; visible disk out to the curvature/refraction horizon
@@ -154,10 +185,13 @@ function hillshadeGrid(z) {
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const statsEl = document.getElementById('stats');
+const readoutEl = document.getElementById('readout');
 const presetEl = document.getElementById('preset');
 const hObsEl = document.getElementById('hObs');
 const hTgtEl = document.getElementById('hTgt');
 const rangeEl = document.getElementById('range');
+const tintEl = document.getElementById('tint');
+const clearEl = document.getElementById('clear');
 
 const off = document.createElement('canvas');
 off.width = N; off.height = N;
@@ -166,7 +200,64 @@ const img = octx.createImageData(N, N);
 
 let z = genTerrain(presetEl.value);
 let shade = hillshadeGrid(z);
-let obs = null; // {x, y} cell of the observer
+let zMin = 0, zMax = 0;   // elevation range of the current terrain
+let obs = null;           // {x, y} cell of the observer
+
+// Hypsometric ramp: classic low-green -> tan -> brown -> snowy-peak progression.
+// Returned as an [r,g,b] triple for a normalized elevation t in [0,1].
+const RAMP = [
+  [0.00, [ 56, 104,  74]],  // lowland green
+  [0.35, [128, 166,  92]],  // grassy
+  [0.55, [201, 190, 128]],  // tan
+  [0.78, [166, 128,  92]],  // brown
+  [1.00, [242, 242, 246]],  // near-white peaks
+];
+function hypso(t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 1; i < RAMP.length; i++) {
+    if (t <= RAMP[i][0]) {
+      const [t0, c0] = RAMP[i - 1], [t1, c1] = RAMP[i];
+      const f = (t - t0) / (t1 - t0);
+      return [c0[0] + (c1[0] - c0[0]) * f,
+              c0[1] + (c1[1] - c0[1]) * f,
+              c0[2] + (c1[2] - c0[2]) * f];
+    }
+  }
+  return RAMP[RAMP.length - 1][1];
+}
+
+// Base terrain color for cell i (before any viewshed overlay). With the tint
+// on, the elevation color is modulated by the hillshade so relief still reads;
+// with it off we fall back to the plain grayscale hillshade.
+function baseColor(i) {
+  const sh = shade[i];
+  if (!tintEl.checked) { const g = 30 + sh * 215; return [g, g, g]; }
+  const t = zMax > zMin ? (z[i] - zMin) / (zMax - zMin) : 0.5;
+  const c = hypso(t);
+  const m = 0.45 + 0.55 * sh; // keep some shading without crushing to black
+  return [c[0] * m, c[1] * m, c[2] * m];
+}
+
+function drawRampLegend() {
+  const rc = document.getElementById('rampBar');
+  const g = rc.getContext('2d');
+  for (let x = 0; x < rc.width; x++) {
+    const c = hypso(x / (rc.width - 1));
+    g.fillStyle = `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+    g.fillRect(x, 0, 1, rc.height);
+  }
+  document.getElementById('rampLo').textContent = Math.round(zMin) + ' m';
+  document.getElementById('rampHi').textContent = Math.round(zMax) + ' m';
+}
+
+function setTerrain(preset) {
+  z = genTerrain(preset);
+  shade = hillshadeGrid(z);
+  zMin = Infinity; zMax = -Infinity;
+  for (let i = 0; i < N * N; i++) { if (z[i] < zMin) zMin = z[i]; if (z[i] > zMax) zMax = z[i]; }
+  if (zMin === zMax) { zMin -= 1; zMax += 1; } // flat plane: avoid zero range
+  drawRampLegend();
+}
 
 function render() {
   let vis = null, msg = 'Click the map to place the observer.';
@@ -180,18 +271,19 @@ function render() {
       if (vis[i] !== 2) nRange++;
       if (vis[i] === 1) nVis++;
     }
-    msg = `Visible: ${nVis} of ${nRange} in-range cells (${(100 * nVis / nRange).toFixed(1)}%) - ${ms.toFixed(0)} ms`;
+    const oz = z[obs.y * N + obs.x];
+    msg = `Observer at (${obs.x}, ${obs.y}), ground ${oz.toFixed(0)} m + ${(+hObsEl.value || 0)} m eye. ` +
+          `Visible: ${nVis} of ${nRange} in-range cells (${(100 * nVis / nRange).toFixed(1)}%) - ${ms.toFixed(0)} ms`;
   }
-  const A = 0.38; // overlay opacity
+  const A = 0.42; // viewshed overlay opacity
   const d = img.data;
   for (let i = 0; i < N * N; i++) {
-    const g = 30 + shade[i] * 215; // grayscale hillshade base
-    let r = g, gg = g, b = g;
-    if (vis && vis[i] === 1) {        // visible: green tint
-      r = g * (1 - A) + 70 * A; gg = g * (1 - A) + 215 * A; b = g * (1 - A) + 90 * A;
-    } else if (vis && vis[i] === 0) { // hidden: red tint
-      r = g * (1 - A) + 215 * A; gg = g * (1 - A) + 55 * A; b = g * (1 - A) + 50 * A;
-    }                                 // out of range: bare hillshade
+    let [r, gg, b] = baseColor(i);
+    if (vis && vis[i] === 1) {        // visible: green
+      r = r * (1 - A) + 70 * A; gg = gg * (1 - A) + 215 * A; b = b * (1 - A) + 90 * A;
+    } else if (vis && vis[i] === 0) { // hidden: red
+      r = r * (1 - A) + 215 * A; gg = gg * (1 - A) + 55 * A; b = b * (1 - A) + 50 * A;
+    }                                 // out of range: bare terrain
     d[i * 4] = r; d[i * 4 + 1] = gg; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
   }
   octx.putImageData(img, 0, 0);
@@ -199,31 +291,48 @@ function render() {
   ctx.drawImage(off, 0, 0, cv.width, cv.height);
   if (obs) { // observer marker
     const s = cv.width / N, mx = (obs.x + 0.5) * s, my = (obs.y + 0.5) * s;
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 3; ctx.strokeStyle = '#000';            // dark halo for contrast on any base
+    ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineWidth = 1.5; ctx.strokeStyle = '#fff';
+    ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2); ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(mx - 9, my); ctx.lineTo(mx + 9, my);
-    ctx.moveTo(mx, my - 9); ctx.lineTo(mx, my + 9);
+    ctx.moveTo(mx - 10, my); ctx.lineTo(mx + 10, my);
+    ctx.moveTo(mx, my - 10); ctx.lineTo(mx, my + 10);
     ctx.stroke();
   }
   statsEl.textContent = msg;
 }
 
-cv.addEventListener('click', e => {
+// Map a pointer event to an integer cell, or null if outside the grid.
+function cellAt(e) {
   const r = cv.getBoundingClientRect();
-  obs = {
-    x: Math.max(0, Math.min(N - 1, Math.floor((e.clientX - r.left) / r.width * N))),
-    y: Math.max(0, Math.min(N - 1, Math.floor((e.clientY - r.top) / r.height * N)))
-  };
-  render();
+  const x = Math.floor((e.clientX - r.left) / r.width * N);
+  const y = Math.floor((e.clientY - r.top) / r.height * N);
+  if (x < 0 || y < 0 || x >= N || y >= N) return null;
+  return { x, y };
+}
+
+cv.addEventListener('click', e => {
+  const c = cellAt(e);
+  if (c) { obs = c; render(); }
 });
-presetEl.addEventListener('change', () => {
-  z = genTerrain(presetEl.value);
-  shade = hillshadeGrid(z);
-  render();
+cv.addEventListener('mousemove', e => {
+  const c = cellAt(e);
+  if (!c) return;
+  const zc = z[c.y * N + c.x];
+  let txt = `(${c.x}, ${c.y})  elev ${zc.toFixed(1)} m`;
+  if (obs) txt += `  ·  ${(Math.hypot(c.x - obs.x, c.y - obs.y) * CELL / 1000).toFixed(2)} km from observer`;
+  readoutEl.textContent = txt;
 });
+cv.addEventListener('mouseleave', () => {
+  readoutEl.textContent = 'Hover the map to read elevation.';
+});
+clearEl.addEventListener('click', () => { obs = null; render(); });
+presetEl.addEventListener('change', () => { setTerrain(presetEl.value); render(); });
+tintEl.addEventListener('change', render);
 for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
 
+setTerrain(presetEl.value);
 render();
 </script>
 </body>
