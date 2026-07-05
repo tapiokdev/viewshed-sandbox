@@ -98,6 +98,9 @@
   In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
   <b>Exposure mode</b> inverts the question: click a target and the green overlay shows every cell an
   observer (at observer height) could see it from.
+  <b>Sensors</b>: right-click places/removes a 10&nbsp;m sensor mast (yellow triangle). With sensors
+  present, planned flights prefer terrain the sensors can't see; exposed route legs draw red and the
+  stats show the exposed share. Sensors persist until the terrain changes or "clear observer".
 </details>
 
 <script id="core">
@@ -263,16 +266,65 @@ function segClear(z, x0, y0, x1, y1, hObs, maxAlt) {
   return true;
 }
 
+// Soft-avoidance factor for penalized (e.g. sensor-exposed) cells: the route
+// crosses them only when a detour would cost more than PEN x the crossing.
+const EXPOSURE_PENALTY = 8;
+
+// Exposure status (0/1) of the penalty field at a continuous position.
+function cellExp(penalty, x, y) {
+  return penalty && penalty[Math.round(y) * N + Math.round(x)] ? 1 : 0;
+}
+// Interior of the segment matches exposure status st (endpoints excluded -
+// they may be junction cells belonging to a neighboring run).
+function segExpOk(penalty, p0, p1, st) {
+  if (!penalty) return st === 0;
+  const steps = Math.max(2, Math.ceil(Math.hypot(p1.x - p0.x, p1.y - p0.y) * 2));
+  for (let s = 1; s < steps; s++) {
+    const t = s / steps;
+    if (cellExp(penalty, p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t) !== st) return false;
+  }
+  return true;
+}
+
+// String-pulling smoothing, run by run: the raw cell path is partitioned into
+// runs of equal exposure status, and shortcuts never mix statuses, so each
+// returned leg is uniformly exposed or uniformly hidden (drawable as such).
+// Waypoint.exp = exposure of the leg ARRIVING at that waypoint.
+function smoothPath(z, cells, hObs, maxAlt, penalty) {
+  const out = [{ x: cells[0].x, y: cells[0].y, exp: 0 }];
+  let runStart = 0;
+  while (runStart < cells.length - 1) {
+    const st = cellExp(penalty, cells[runStart + 1].x, cells[runStart + 1].y);
+    let runEnd = runStart + 1;
+    while (runEnd + 1 < cells.length &&
+           cellExp(penalty, cells[runEnd + 1].x, cells[runEnd + 1].y) === st) runEnd++;
+    let i = runStart;
+    while (i < runEnd) {
+      let j = runEnd;
+      while (j > i + 1 &&
+             !(segClear(z, cells[i].x, cells[i].y, cells[j].x, cells[j].y, hObs, maxAlt) &&
+               segExpOk(penalty, cells[i], cells[j], st))) j--;
+      out.push({ x: cells[j].x, y: cells[j].y, exp: st });
+      i = j;
+    }
+    runStart = runEnd;
+  }
+  return out;
+}
+
 // A* route from (ax,ay) to (bx,by) avoiding cells where ground + hObs would
-// exceed maxAlt. Returns waypoints [{x,y}, ...] (A first, B last) - [A,B]
-// when the straight line is already clear - or null when no route exists.
-// Runs once per launch: a few ms on this grid, negligible next to a single
-// viewshed frame. 8-connected with no corner-cutting (a diagonal step needs
-// both adjacent orthogonal cells open), octile-distance heuristic, lazy-
-// deletion binary min-heap.
-function findPath(z, ax, ay, bx, by, hObs, maxAlt) {
-  if (segClear(z, ax, ay, bx, by, hObs, maxAlt))
-    return [{ x: ax, y: ay }, { x: bx, y: by }];
+// exceed maxAlt (hard constraint), softly avoiding cells flagged in the
+// optional penalty field (cost x EXPOSURE_PENALTY). Returns waypoints
+// [{x,y,exp}, ...] (A first, B last; exp marks legs the penalty field sees) -
+// [A,B] when the straight line is clear and unexposed - or null when
+// unreachable. Runs once per launch: a few ms on this grid. 8-connected with
+// no corner-cutting (a diagonal step needs both adjacent orthogonal cells
+// open), octile-distance heuristic, lazy-deletion binary min-heap.
+function findPath(z, ax, ay, bx, by, hObs, maxAlt, penalty) {
+  if (segClear(z, ax, ay, bx, by, hObs, maxAlt) &&
+      segExpOk(penalty, { x: ax, y: ay }, { x: bx, y: by }, 0) &&
+      !cellExp(penalty, ax, ay) && !cellExp(penalty, bx, by))
+    return [{ x: ax, y: ay, exp: 0 }, { x: bx, y: by, exp: 0 }];
   const blocked = i => z[i] + hObs > maxAlt;
   const start = ay * N + ax, goal = by * N + bx;
   if (blocked(start) || blocked(goal)) return null;
@@ -316,16 +368,7 @@ function findPath(z, ax, ay, bx, by, hObs, maxAlt) {
       const cells = [];
       for (let i = goal; i !== -1; i = came[i]) cells.push({ x: i % N, y: (i / N) | 0 });
       cells.reverse();
-      // String-pulling: greedily skip to the farthest waypoint reachable by
-      // a clear straight segment, so grid staircases become straight legs.
-      const out = [cells[0]];
-      let i = 0;
-      while (i < cells.length - 1) {
-        let j = cells.length - 1;
-        while (j > i + 1 && !segClear(z, cells[i].x, cells[i].y, cells[j].x, cells[j].y, hObs, maxAlt)) j--;
-        out.push(cells[j]); i = j;
-      }
-      return out;
+      return smoothPath(z, cells, hObs, maxAlt, penalty);
     }
     if (closed[cur]) continue;
     closed[cur] = 1;
@@ -338,7 +381,8 @@ function findPath(z, ax, ay, bx, by, hObs, maxAlt) {
         const ni = ny * N + nx;
         if (closed[ni] || blocked(ni)) continue;
         if (dx && dy && (blocked(cy * N + nx) || blocked(ny * N + cx))) continue;
-        const ng = g[cur] + (dx && dy ? Math.SQRT2 : 1);
+        const ng = g[cur] + (dx && dy ? Math.SQRT2 : 1) *
+                           (penalty && penalty[ni] ? EXPOSURE_PENALTY : 1);
         if (ng < g[ni]) { g[ni] = ng; f[ni] = ng + oct(ni); came[ni] = cur; push(ni); }
       }
   }
@@ -397,9 +441,12 @@ let ptA = null, ptB = null;         // flight endpoints (integer cells)
 let tFlight = 0;                    // progress along the path, 0..1
 let flying = false, rafId = 0, timerId = 0;
 let lastTick = 0;                   // wall-clock time of the previous frame
-let flightPath = null;              // planned waypoints [{x,y},...] from findPath
+let flightPath = null;              // planned waypoints [{x,y,exp},...] from findPath
 let cumLen = [0], totalLen = 0;     // cumulative segment lengths (cells)
 let ceilNote = '';                  // stats note when the ceiling was auto-raised
+let sensors = [];                   // [{x,y}] 10 m masts placed by right-click
+let expFrac = null;                 // exposed fraction of the planned route
+const SENSOR_H = 10;                // sensor mast eye height, meters
 const seen = new Uint8Array(N * N); // cells visible at least once this flight
 const DRONE_SPEED = 15;             // ground speed, cells/s (450 m/s map speed)
 const MIN_FLIGHT_S = 4, MAX_FLIGHT_S = 20; // duration clamp for tiny/huge paths
@@ -504,6 +551,7 @@ function render() {
       const straight = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
       msg += ` - route ${(totalLen * CELL / 1000).toFixed(2)} km` +
              (totalLen > straight + 0.5 ? ` (straight ${(straight * CELL / 1000).toFixed(2)} km)` : '') +
+             (expFrac !== null ? ` - exposed to sensors ${Math.round(100 * expFrac)}%` : '') +
              ceilNote;
     }
   }
@@ -531,7 +579,7 @@ function render() {
   if (drone && ptA) { // planned route + endpoint labels
     if (ptB && flightPath) {
       ctx.setLineDash([6, 5]);
-      ctx.beginPath();
+      ctx.beginPath(); // halo pass over the whole polyline
       const [sx, sy] = px(flightPath[0]);
       ctx.moveTo(sx, sy);
       for (let i = 1; i < flightPath.length; i++) {
@@ -539,7 +587,12 @@ function render() {
         ctx.lineTo(x, y);
       }
       ctx.lineWidth = 3; ctx.strokeStyle = '#0009'; ctx.stroke();
-      ctx.lineWidth = 1.2; ctx.strokeStyle = '#fff'; ctx.stroke();
+      ctx.lineWidth = 1.2; // color pass: red where the sensors would see the drone
+      for (let i = 1; i < flightPath.length; i++) {
+        const [x0, y0] = px(flightPath[i - 1]), [x1, y1] = px(flightPath[i]);
+        ctx.strokeStyle = flightPath[i].exp ? '#ff5346' : '#fff';
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      }
       ctx.setLineDash([]);
     }
     ctx.font = 'bold 13px system-ui, sans-serif';
@@ -549,6 +602,14 @@ function render() {
       ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.strokeText(name, x, y - 13);
       ctx.fillStyle = '#fff'; ctx.fillText(name, x, y - 13);
     }
+  }
+  for (const sn of sensors) { // sensor masts: yellow triangles
+    const [x, y] = px(sn);
+    ctx.beginPath();
+    ctx.moveTo(x, y - 6); ctx.lineTo(x - 5, y + 4); ctx.lineTo(x + 5, y + 4);
+    ctx.closePath();
+    ctx.lineWidth = 2.5; ctx.strokeStyle = '#000'; ctx.stroke();
+    ctx.fillStyle = '#ffd23f'; ctx.fill();
   }
   if (obs) { // observer / drone marker (fractional coords mid-flight)
     const [mx, my] = px(obs);
@@ -662,7 +723,7 @@ function cancelFlight() {
 function resetFlight() {
   cancelFlight();
   ptA = null; ptB = null; tFlight = 0;
-  flightPath = null; cumLen = [0]; totalLen = 0; ceilNote = '';
+  flightPath = null; cumLen = [0]; totalLen = 0; ceilNote = ''; expFrac = null;
   seen.fill(0);
 }
 function startFlight() {
@@ -673,7 +734,17 @@ function startFlight() {
   const userAlt = +maxAltEl.value || 0;
   const effMaxAlt = Math.max(userAlt,
     elevAt(z, ptA.x, ptA.y) + hObs, elevAt(z, ptB.x, ptB.y) + hObs);
-  const path = findPath(z, ptA.x, ptA.y, ptB.x, ptB.y, hObs, effMaxAlt);
+  // Stealth: cells where any sensor mast could see a drone flying at hObs AGL
+  // become soft-avoided (union of one viewshed per sensor, computed once here).
+  let exposure = null;
+  if (sensors.length) {
+    exposure = new Uint8Array(N * N);
+    for (const sn of sensors) {
+      const v = computeViewshed(z, sn.x, sn.y, SENSOR_H, hObs, +rangeEl.value || 0);
+      for (let i = 0; i < N * N; i++) if (v[i] === 1) exposure[i] = 1;
+    }
+  }
+  const path = findPath(z, ptA.x, ptA.y, ptB.x, ptB.y, hObs, effMaxAlt, exposure);
   if (!path) { // impassable wall between A and B under this ceiling
     ptB = null; flightPath = null; obs = { ...ptA };
     render();
@@ -682,9 +753,14 @@ function startFlight() {
   }
   flightPath = path;
   cumLen = [0];
-  for (let i = 1; i < path.length; i++)
-    cumLen.push(cumLen[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y));
+  let expLen = 0;
+  for (let i = 1; i < path.length; i++) {
+    const seg = Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+    cumLen.push(cumLen[i - 1] + seg);
+    if (path[i].exp) expLen += seg;
+  }
   totalLen = cumLen[cumLen.length - 1];
+  expFrac = exposure && totalLen > 0 ? expLen / totalLen : null;
   ceilNote = effMaxAlt > userAlt ? ` - ceiling auto-raised to ${Math.round(effMaxAlt)} m for A/B` : '';
   tFlight = 0; seen.fill(0);
   flying = true;
@@ -743,9 +819,19 @@ function cellAtF(e) {
 let downPx = null, didDrag = false;
 
 cv.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return; // right-click is the sensor gesture
   downPx = { x: e.clientX, y: e.clientY };
   didDrag = false;
   cv.setPointerCapture(e.pointerId);
+});
+// Right-click places a sensor mast; right-click near an existing one removes it.
+cv.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  const c = cellAt(e);
+  if (!c) return;
+  const i = sensors.findIndex(s => Math.hypot(s.x - c.x, s.y - c.y) <= 2);
+  if (i >= 0) sensors.splice(i, 1); else sensors.push(c);
+  render();
 });
 cv.addEventListener('pointermove', e => {
   if (!downPx) return;
@@ -758,6 +844,7 @@ cv.addEventListener('pointermove', e => {
   render();
 });
 cv.addEventListener('pointerup', e => {
+  if (e.button !== 0) return;
   const wasDrag = didDrag;
   downPx = null; didDrag = false;
   if (wasDrag) return;          // scrub already parked obs at the last position
@@ -796,7 +883,9 @@ function clearAll() {
   obs = null;
   render();
 }
-clearEl.addEventListener('click', clearAll);
+// The button is a full reset (sensors included); a stray click outside the
+// map (below) clears only the observer/flight and leaves sensors standing.
+clearEl.addEventListener('click', () => { sensors = []; clearAll(); });
 // Clicking off the map (empty page, title, hint) also clears the observer /
 // flight. The canvas places the observer, and the controls/legend relate to
 // it, so clicks landing there are excluded to keep those interactions
@@ -814,6 +903,7 @@ modeEl.addEventListener('change', () => {
 coverEl.addEventListener('change', render);
 function regen() {
   resetFlight();                          // terrain changes under the path
+  sensors = [];                           // and under the masts
   if (modeEl.value === 'drone') obs = null;
   setTerrain(presetEl.value, Math.trunc(+seedEl.value) || 1);
   render();
