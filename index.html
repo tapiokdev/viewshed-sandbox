@@ -35,10 +35,16 @@
   <label title="Seed for the procedural presets; flat plane and single ridge ignore it">Seed
     <input id="seed" type="number" value="1" step="1"></label>
   <button id="dice" type="button" title="Random seed">randomize</button>
-  <label>Observer h (m) <input id="hObs" type="number" value="2" step="0.5"></label>
+  <label>Mode <select id="mode">
+    <option value="single" selected>observer (click)</option>
+    <option value="drone">drone A&rarr;B</option>
+  </select></label>
+  <label>Observer/drone h (m) <input id="hObs" type="number" value="2" step="0.5"></label>
   <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
   <label>Max range (m) <input id="range" type="number" value="9000" step="500"></label>
   <label title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> elevation color</label>
+  <label title="Drone mode: tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
+  <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
   <button id="clear" type="button">clear observer</button>
 </div>
 <div class="stage">
@@ -54,6 +60,7 @@
       <h3>Viewshed</h3>
       <div class="swatches">
         <span class="sw" style="background:#46d75a"></span><span>visible from observer</span>
+        <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
         <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
         <span class="sw" style="background:#888"></span><span>beyond max range</span>
       </div>
@@ -66,6 +73,8 @@
   &radic;(2&middot;R<sub>eff</sub>&middot;h) &asymp; 5.45&nbsp;km at h&nbsp;=&nbsp;2&nbsp;m &mdash; click near a corner
   (or drop observer height to ~0.5&nbsp;m) so the horizon arc falls inside the 6&times;6&nbsp;km map.
   <b>single ridge</b> &rarr; click west of the ridge for a clean shadow behind it.
+  <b>Drone mode</b>: click A then B; the drone flies straight at the set height above local
+  ground, and the overlay follows it. Height/range edits apply live mid-flight.
 </div>
 
 <script id="core">
@@ -177,9 +186,12 @@ function elevAt(z, gx, gy) {
 }
 
 // Per-cell ray cast. Returns Uint8Array: 0 = hidden, 1 = visible, 2 = beyond max range.
+// Observer coords (ox, oy) may be fractional (e.g. a drone between cells);
+// elevAt() returns the exact cell value at integer coords, so integer
+// observers behave exactly as before.
 function computeViewshed(z, ox, oy, hObs, hTgt, maxRange) {
   const vis = new Uint8Array(N * N);
-  const zObs = z[oy * N + ox] + hObs;   // eye height on top of ground
+  const zObs = elevAt(z, ox, oy) + hObs; // eye height on top of ground
   const STEP = 0.5;                     // ray sample spacing, in cells (15 m)
   // Slope tolerance against float noise. Keep it tiny: near a grazing horizon
   // the occlusion depth grows only quadratically with distance, so a slope
@@ -247,6 +259,9 @@ const tintEl = document.getElementById('tint');
 const clearEl = document.getElementById('clear');
 const seedEl = document.getElementById('seed');
 const diceEl = document.getElementById('dice');
+const modeEl = document.getElementById('mode');
+const coverEl = document.getElementById('cover');
+const replayEl = document.getElementById('replay');
 
 const off = document.createElement('canvas');
 off.width = N; off.height = N;
@@ -255,7 +270,13 @@ const img = octx.createImageData(N, N);
 
 let z, shade;             // terrain + hillshade, assigned by setTerrain()
 let zMin = 0, zMax = 0;   // elevation range of the current terrain
-let obs = null;           // {x, y} cell of the observer
+let obs = null;           // {x, y} observer position; fractional mid-flight
+
+// Drone flight state (mode "drone A->B")
+let ptA = null, ptB = null;         // flight endpoints (integer cells)
+let tFlight = 0;                    // progress along the path, 0..1
+let flying = false, rafId = 0;
+const seen = new Uint8Array(N * N); // cells visible at least once this flight
 
 // Hypsometric ramp: classic low-green -> tan -> brown -> snowy-peak progression.
 // Returned as an [r,g,b] triple for a normalized elevation t in [0,1].
@@ -314,37 +335,75 @@ function setTerrain(preset, seed) {
 }
 
 function render() {
-  let vis = null, msg = 'Click the map to place the observer.';
+  const drone = modeEl.value === 'drone';
+  let vis = null;
+  let msg = drone ? 'Drone mode: click to set A, then click to set B and launch.'
+                  : 'Click the map to place the observer.';
+  if (drone && ptA && !ptB) msg = 'A set - click to set B and launch.';
   if (obs) {
     const t0 = performance.now();
     vis = computeViewshed(z, obs.x, obs.y,
       +hObsEl.value || 0, +hTgtEl.value || 0, +rangeEl.value || 0);
     const ms = performance.now() - t0;
+    // Coverage accumulates in drone mode regardless of the toggle, so
+    // switching the trail on after landing still reveals the full history.
+    if (drone) for (let i = 0; i < N * N; i++) if (vis[i] === 1) seen[i] = 1;
     let nVis = 0, nRange = 0;
     for (let i = 0; i < N * N; i++) {
       if (vis[i] !== 2) nRange++;
       if (vis[i] === 1) nVis++;
     }
-    const oz = z[obs.y * N + obs.x];
-    msg = `Observer at (${obs.x}, ${obs.y}), ground ${oz.toFixed(0)} m + ${(+hObsEl.value || 0)} m eye. ` +
-          `Visible: ${nVis} of ${nRange} in-range cells (${(100 * nVis / nRange).toFixed(1)}%) - ${ms.toFixed(0)} ms`;
+    const oz = elevAt(z, obs.x, obs.y);
+    const fmt = v => Number.isInteger(v) ? v : v.toFixed(1);
+    const who = drone ? (ptB ? `Drone ${Math.round(tFlight * 100)}% A→B` : 'Drone parked at A')
+                      : 'Observer';
+    msg = `${who} at (${fmt(obs.x)}, ${fmt(obs.y)}), ground ${oz.toFixed(0)} m + ${(+hObsEl.value || 0)} m. ` +
+          `Visible: ${nVis} of ${nRange} in-range (${(100 * nVis / nRange).toFixed(1)}%) - ${ms.toFixed(0)} ms`;
+    if (drone && coverEl.checked) {
+      let nSeen = 0;
+      for (let i = 0; i < N * N; i++) if (seen[i]) nSeen++;
+      msg += ` - coverage ${(100 * nSeen / (N * N)).toFixed(1)}%`;
+    }
   }
-  const A = 0.42; // viewshed overlay opacity
+  const OV = 0.42, OVS = 0.30; // overlay opacity: current viewshed / coverage trail
+  const showSeen = drone && coverEl.checked;
   const d = img.data;
   for (let i = 0; i < N * N; i++) {
     let [r, gg, b] = baseColor(i);
-    if (vis && vis[i] === 1) {        // visible: green
-      r = r * (1 - A) + 70 * A; gg = gg * (1 - A) + 215 * A; b = b * (1 - A) + 90 * A;
-    } else if (vis && vis[i] === 0) { // hidden: red
-      r = r * (1 - A) + 215 * A; gg = gg * (1 - A) + 55 * A; b = b * (1 - A) + 50 * A;
-    }                                 // out of range: bare terrain
+    if (vis && vis[i] === 1) {          // currently visible: green
+      r = r * (1 - OV) + 70 * OV; gg = gg * (1 - OV) + 215 * OV; b = b * (1 - OV) + 90 * OV;
+    } else if (showSeen && seen[i]) {   // seen earlier in the flight: pale teal
+      r = r * (1 - OVS) + 80 * OVS; gg = gg * (1 - OVS) + 195 * OVS; b = b * (1 - OVS) + 205 * OVS;
+    } else if (vis && vis[i] === 0) {   // hidden: red
+      r = r * (1 - OV) + 215 * OV; gg = gg * (1 - OV) + 55 * OV; b = b * (1 - OV) + 50 * OV;
+    }                                   // out of range: bare terrain
     d[i * 4] = r; d[i * 4 + 1] = gg; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
   }
   octx.putImageData(img, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(off, 0, 0, cv.width, cv.height);
-  if (obs) { // observer marker
-    const s = cv.width / N, mx = (obs.x + 0.5) * s, my = (obs.y + 0.5) * s;
+  const s = cv.width / N;
+  const px = p => [(p.x + 0.5) * s, (p.y + 0.5) * s];
+  if (drone && ptA) { // flight path + endpoint labels
+    if (ptB) {
+      const [ax, ay] = px(ptA), [bx, by] = px(ptB);
+      ctx.setLineDash([6, 5]);
+      ctx.lineWidth = 3; ctx.strokeStyle = '#0009';
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.lineWidth = 1.2; ctx.strokeStyle = '#fff';
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const [p, name] of ptB ? [[ptA, 'A'], [ptB, 'B']] : [[ptA, 'A']]) {
+      const [x, y] = px(p);
+      ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.strokeText(name, x, y - 13);
+      ctx.fillStyle = '#fff'; ctx.fillText(name, x, y - 13);
+    }
+  }
+  if (obs) { // observer / drone marker (fractional coords mid-flight)
+    const [mx, my] = px(obs);
     ctx.lineWidth = 3; ctx.strokeStyle = '#000';            // dark halo for contrast on any base
     ctx.beginPath(); ctx.arc(mx, my, 6, 0, Math.PI * 2); ctx.stroke();
     ctx.lineWidth = 1.5; ctx.strokeStyle = '#fff';
@@ -366,9 +425,51 @@ function cellAt(e) {
   return { x, y };
 }
 
+// ---- drone flight machinery ----
+function cancelFlight() {
+  flying = false;
+  if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+}
+function resetFlight() {
+  cancelFlight();
+  ptA = null; ptB = null; tFlight = 0;
+  seen.fill(0);
+}
+function startFlight() {
+  cancelFlight();
+  tFlight = 0; seen.fill(0);
+  flying = true;
+  tick();
+}
+function tick() {
+  const len = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
+  if (len === 0) { flying = false; obs = { ...ptA }; render(); return; }
+  // ~60 frames per flight regardless of path length; each frame costs one
+  // synchronous viewshed (~100-250 ms), so a flight runs ~8-20 s. Choppy by
+  // design - no workers, per GOAL.md.
+  const step = Math.min(3, Math.max(0.5, len / 60));
+  tFlight = Math.min(1, tFlight + step / len);
+  obs = { x: ptA.x + (ptB.x - ptA.x) * tFlight, y: ptA.y + (ptB.y - ptA.y) * tFlight };
+  render();
+  if (flying && tFlight < 1) rafId = requestAnimationFrame(tick);
+  else flying = false; // drone parks at B, viewshed stays live
+}
+
 cv.addEventListener('click', e => {
   const c = cellAt(e);
-  if (c) { obs = c; render(); }
+  if (!c) return;
+  if (modeEl.value === 'drone') {
+    if (!ptA || ptB) {          // first click, or restart after a flight
+      resetFlight();
+      ptA = c; obs = { ...c };  // park at A with its viewshed shown
+      render();
+    } else {                    // second click: launch
+      ptB = c;
+      startFlight();
+    }
+  } else {
+    obs = c; render();
+  }
 });
 cv.addEventListener('mousemove', e => {
   const c = cellAt(e);
@@ -381,14 +482,25 @@ cv.addEventListener('mousemove', e => {
 cv.addEventListener('mouseleave', () => {
   readoutEl.textContent = 'Hover the map to read elevation.';
 });
-clearEl.addEventListener('click', () => { obs = null; render(); });
-// Clicking off the map (empty page, title, hint) also clears the observer.
-// The canvas places the observer, and the controls/legend relate to it, so
-// clicks landing there are excluded to keep those interactions non-destructive.
+function clearAll() {
+  resetFlight();
+  obs = null;
+  render();
+}
+clearEl.addEventListener('click', clearAll);
+// Clicking off the map (empty page, title, hint) also clears the observer /
+// flight. The canvas places the observer, and the controls/legend relate to
+// it, so clicks landing there are excluded to keep those interactions
+// non-destructive.
 document.addEventListener('click', e => {
-  if (obs && !e.target.closest('#cv, #controls, #side')) { obs = null; render(); }
+  if ((obs || ptA) && !e.target.closest('#cv, #controls, #side')) clearAll();
 });
+replayEl.addEventListener('click', () => { if (ptA && ptB) startFlight(); });
+modeEl.addEventListener('change', clearAll);
+coverEl.addEventListener('change', render);
 function regen() {
+  resetFlight();                          // terrain changes under the path
+  if (modeEl.value === 'drone') obs = null;
   setTerrain(presetEl.value, Math.trunc(+seedEl.value) || 1);
   render();
 }
