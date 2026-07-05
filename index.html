@@ -36,12 +36,12 @@
     <input id="seed" type="number" value="1" step="1"></label>
   <button id="dice" type="button" title="Random seed">randomize</button>
   <label>Mode <select id="mode">
-    <option value="single" selected>observer (click)</option>
-    <option value="drone">drone A&rarr;B</option>
+    <option value="single">observer (click)</option>
+    <option value="drone" selected>drone A&rarr;B</option>
   </select></label>
-  <label>Observer/drone h (m) <input id="hObs" type="number" value="2" step="0.5"></label>
+  <label>Observer/drone h (m) <input id="hObs" type="number" value="5" step="0.5"></label>
   <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
-  <label>Max range (m) <input id="range" type="number" value="9000" step="500"></label>
+  <label>Max range (m) <input id="range" type="number" value="3000" step="500"></label>
   <label title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> elevation color</label>
   <label title="Drone mode: tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
   <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
@@ -70,8 +70,9 @@
 <div id="stats">Click the map to place the observer.</div>
 <div id="hint">
   Verification: <b>flat plane</b> &rarr; visible disk out to the curvature/refraction horizon
-  &radic;(2&middot;R<sub>eff</sub>&middot;h) &asymp; 5.45&nbsp;km at h&nbsp;=&nbsp;2&nbsp;m &mdash; click near a corner
-  (or drop observer height to ~0.5&nbsp;m) so the horizon arc falls inside the 6&times;6&nbsp;km map.
+  &radic;(2&middot;R<sub>eff</sub>&middot;h) &asymp; 5.45&nbsp;km at h&nbsp;=&nbsp;2&nbsp;m &mdash; raise max range to
+  &ge;9000&nbsp;m, then click near a corner (or drop observer height to ~0.5&nbsp;m) so the horizon
+  arc falls inside the 6&times;6&nbsp;km map.
   <b>single ridge</b> &rarr; click west of the ridge for a clean shadow behind it.
   <b>Drone mode</b>: click A then B; the drone flies straight at the set height above local
   ground, and the overlay follows it. Height/range edits apply live mid-flight.
