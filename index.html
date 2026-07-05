@@ -5,7 +5,10 @@
 <title>Terrain Viewshed Analyzer</title>
 <style>
   body { font-family: system-ui, sans-serif; margin: 16px; background: #1b1b1f; color: #ddd; }
-  h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px;
+       display: flex; align-items: center; max-width: 838px; }
+  #reset { margin-left: auto; font-size: 12px; color: #c99; border-color: #744; }
+  #reset:hover { border-color: #b66 !important; color: #ecc; }
   .ctlrow { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
   .ctlrow .rowtag { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: .06em; width: 58px; }
   label { font-size: 13px; }
@@ -44,7 +47,9 @@
 </style>
 </head>
 <body>
-<h1>Terrain Viewshed Analyzer</h1>
+<h1>Terrain Viewshed Analyzer
+  <button id="reset" type="button" title="Restore all controls and the terrain to their defaults; removes sensors, observer and flight">reset to defaults</button>
+</h1>
 <div id="controls">
   <div class="ctlrow">
     <span class="rowtag">Terrain</span>
@@ -989,6 +994,22 @@ document.addEventListener('click', e => {
   if ((obs || ptA) && !e.target.closest('#cv, #controls, #side, #hint')) clearAll();
 });
 replayEl.addEventListener('click', () => { if (ptA && ptB) startFlight(); });
+// Full factory reset: every control back to its default, scenario wiped.
+// Reuses regen() (flight + sensors + terrain + render), which also rewrites
+// the URL hash to the default state.
+document.getElementById('reset').addEventListener('click', () => {
+  presetEl.value = 'ridged'; seedEl.value = 1;
+  modeEl.value = 'drone';
+  hObsEl.value = 5; hTgtEl.value = 0; rangeEl.value = 4000;
+  maxAltEl.value = 180; maxAltValEl.textContent = '180 m';
+  sensorHEl.value = 10;
+  tintEl.checked = true; coverEl.checked = false;
+  obs = null; ceilHover = false; ceilSticky = false;
+  document.body.dataset.mode = 'drone';
+  updateGestures();
+  document.getElementById('visLegend').textContent = 'visible from observer';
+  regen();
+});
 modeEl.addEventListener('change', () => {
   document.body.dataset.mode = modeEl.value; // drives drone-only control visibility
   updateGestures();
