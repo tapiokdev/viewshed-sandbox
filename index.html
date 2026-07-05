@@ -27,10 +27,14 @@
 <h1>Terrain Viewshed Analyzer</h1>
 <div id="controls">
   <label>Terrain <select id="preset">
-    <option value="hills" selected>hills</option>
+    <option value="hills" selected>rolling hills (procedural)</option>
+    <option value="ridged">ridged mountains (procedural)</option>
     <option value="flat">flat plane</option>
     <option value="ridge">single ridge</option>
   </select></label>
+  <label title="Seed for the procedural presets; flat plane and single ridge ignore it">Seed
+    <input id="seed" type="number" value="1" step="1"></label>
+  <button id="dice" type="button" title="Random seed">randomize</button>
   <label>Observer h (m) <input id="hObs" type="number" value="2" step="0.5"></label>
   <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
   <label>Max range (m) <input id="range" type="number" value="9000" step="500"></label>
@@ -77,7 +81,54 @@ const CELL = 30;  // cell size, meters
 // plane is d^2 / (2 * R_EFF).
 const R_EFF = 6371000 * 7 / 6;
 
-function genTerrain(preset) {
+// ---- seeded procedural noise ----
+// Integer lattice hash -> [0,1). Stateless (no stored lattice), so terrain is
+// fully determined by (preset, seed) and reproducible across sessions.
+function hash2(ix, iy, seed) {
+  let h = (Math.imul(ix, 374761393) + Math.imul(iy, 668265263)
+         + Math.imul(seed | 0, 1440662683)) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+// Value noise: smoothstep-faded bilinear blend of hashed lattice corners.
+function valueNoise(x, y, seed) {
+  const x0 = Math.floor(x), y0 = Math.floor(y);
+  let fx = x - x0, fy = y - y0;
+  fx = fx * fx * (3 - 2 * fx);
+  fy = fy * fy * (3 - 2 * fy);
+  const a = hash2(x0, y0, seed), b = hash2(x0 + 1, y0, seed);
+  const c = hash2(x0, y0 + 1, seed), d = hash2(x0 + 1, y0 + 1, seed);
+  return a + (b - a) * fx + (c - a) * fy + (a - b - c + d) * fx * fy;
+}
+
+// Fractional Brownian motion: octave sum of value noise, normalized to ~[0,1].
+function fbm(x, y, seed, octaves = 5, lacunarity = 2, gain = 0.5) {
+  let sum = 0, amp = 1, freq = 1, norm = 0;
+  for (let o = 0; o < octaves; o++) {
+    sum += amp * valueNoise(x * freq, y * freq, seed + o * 101);
+    norm += amp;
+    amp *= gain; freq *= lacunarity;
+  }
+  return sum / norm;
+}
+
+// Ridged variant: fold each octave around its midpoint and square it, so the
+// noise's zero-crossings become sharp crest lines with deep valleys between.
+function ridgedFbm(x, y, seed, octaves = 5, lacunarity = 2, gain = 0.5) {
+  let sum = 0, amp = 1, freq = 1, norm = 0;
+  for (let o = 0; o < octaves; o++) {
+    const n = valueNoise(x * freq, y * freq, seed + o * 101);
+    const r = 1 - Math.abs(2 * n - 1);
+    sum += amp * r * r;
+    norm += amp;
+    amp *= gain; freq *= lacunarity;
+  }
+  return sum / norm;
+}
+
+function genTerrain(preset, seed = 1) {
   const z = new Float32Array(N * N);
   if (preset === 'flat') return z; // all zeros
   if (preset === 'ridge') {
@@ -88,17 +139,19 @@ function genTerrain(preset) {
         z[y * N + x] = 160 * Math.exp(-((x - 130) ** 2) / (2 * 8 * 8));
     return z;
   }
-  // 'hills': gentle sine swell plus a few gaussian hills.
-  const g = (x, y, cx, cy, s, a) =>
-    a * Math.exp(-(((x - cx) ** 2 + (y - cy) ** 2)) / (2 * s * s));
+  const s = (seed | 0) || 1;
+  const f = 1 / 65; // base wavelength ~65 cells (~2 km)
+  if (preset === 'ridged') {
+    // Ridged mountains: ~200 m relief, sharp crests for dramatic shadows.
+    for (let y = 0; y < N; y++)
+      for (let x = 0; x < N; x++)
+        z[y * N + x] = 260 * ridgedFbm(x * f, y * f, s);
+    return z;
+  }
+  // 'hills': rolling procedural terrain, relief comparable to the old preset.
   for (let y = 0; y < N; y++)
-    for (let x = 0; x < N; x++) {
-      let v = 25 * Math.sin(x * 0.045) + 20 * Math.sin(y * 0.06 + 1.3)
-            + 12 * Math.sin((x + y) * 0.03);
-      v += g(x, y, 60, 70, 22, 90) + g(x, y, 140, 50, 16, 70)
-         + g(x, y, 110, 150, 28, 110) + g(x, y, 40, 165, 14, 55);
-      z[y * N + x] = v + 60;
-    }
+    for (let x = 0; x < N; x++)
+      z[y * N + x] = 190 * fbm(x * f, y * f, s + 7777);
   return z;
 }
 
@@ -192,14 +245,15 @@ const hTgtEl = document.getElementById('hTgt');
 const rangeEl = document.getElementById('range');
 const tintEl = document.getElementById('tint');
 const clearEl = document.getElementById('clear');
+const seedEl = document.getElementById('seed');
+const diceEl = document.getElementById('dice');
 
 const off = document.createElement('canvas');
 off.width = N; off.height = N;
 const octx = off.getContext('2d');
 const img = octx.createImageData(N, N);
 
-let z = genTerrain(presetEl.value);
-let shade = hillshadeGrid(z);
+let z, shade;             // terrain + hillshade, assigned by setTerrain()
 let zMin = 0, zMax = 0;   // elevation range of the current terrain
 let obs = null;           // {x, y} cell of the observer
 
@@ -250,8 +304,8 @@ function drawRampLegend() {
   document.getElementById('rampHi').textContent = Math.round(zMax) + ' m';
 }
 
-function setTerrain(preset) {
-  z = genTerrain(preset);
+function setTerrain(preset, seed) {
+  z = genTerrain(preset, seed);
   shade = hillshadeGrid(z);
   zMin = Infinity; zMax = -Infinity;
   for (let i = 0; i < N * N; i++) { if (z[i] < zMin) zMin = z[i]; if (z[i] > zMax) zMax = z[i]; }
@@ -334,12 +388,20 @@ clearEl.addEventListener('click', () => { obs = null; render(); });
 document.addEventListener('click', e => {
   if (obs && !e.target.closest('#cv, #controls, #side')) { obs = null; render(); }
 });
-presetEl.addEventListener('change', () => { setTerrain(presetEl.value); render(); });
+function regen() {
+  setTerrain(presetEl.value, Math.trunc(+seedEl.value) || 1);
+  render();
+}
+presetEl.addEventListener('change', regen);
+seedEl.addEventListener('input', regen);
+diceEl.addEventListener('click', () => {
+  seedEl.value = 1 + Math.floor(Math.random() * 99999);
+  regen();
+});
 tintEl.addEventListener('change', render);
 for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
 
-setTerrain(presetEl.value);
-render();
+regen();
 </script>
 </body>
 </html>
