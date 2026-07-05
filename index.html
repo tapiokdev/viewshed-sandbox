@@ -22,6 +22,7 @@
   .swatches { display: grid; grid-template-columns: 14px 1fr; gap: 5px 8px; align-items: center; margin-top: 4px; }
   .sw { width: 14px; height: 14px; border-radius: 2px; border: 1px solid #0004; }
   #readout { font-size: 12px; color: #9bd; min-height: 1.2em; font-variant-numeric: tabular-nums; }
+  #prof { border: 1px solid #444; border-radius: 2px; background: #141416; }
   #stats { font-size: 13px; color: #9c9; min-height: 1.2em; margin-top: 8px; }
   #hint { font-size: 12px; color: #888; max-width: 620px; margin-top: 6px; line-height: 1.4; }
   #hint summary { cursor: pointer; color: #9ab; user-select: none; }
@@ -62,6 +63,10 @@
   <canvas id="cv" width="600" height="600"></canvas>
   <div id="side">
     <div id="readout">Hover the map to read elevation.</div>
+    <div class="legend" id="profBox" style="display:none">
+      <h3>Sightline profile</h3>
+      <canvas id="prof" width="220" height="100"></canvas>
+    </div>
     <div class="legend">
       <h3>Elevation</h3>
       <div class="ramp"><canvas id="rampBar" width="130" height="12"></canvas></div>
@@ -546,6 +551,82 @@ function render() {
     ctx.stroke();
   }
   statsEl.textContent = msg;
+  drawProfile(); // keeps the cross-section live during flights and scrubs
+}
+
+// ---- sightline profile inspector ----
+const profBox = document.getElementById('profBox');
+const profCtx = document.getElementById('prof').getContext('2d');
+let lastHover = null; // integer cell under the cursor, null off-map
+
+// Cross-section from the observer/drone to the hovered cell: effective
+// ground (curvature drop applied, same d^2/2R_EFF as the viewshed), the
+// eye->target line of sight, and the first blocking sample when hidden.
+// Answers "why is this cell red?" - the map view can't.
+function drawProfile() {
+  if (!obs || !lastHover) { profBox.style.display = 'none'; return; }
+  profBox.style.display = '';
+  const W = 220, H = 100;
+  profCtx.fillStyle = '#141416'; profCtx.fillRect(0, 0, W, H);
+  profCtx.font = '10px system-ui, sans-serif';
+  const dx = lastHover.x - obs.x, dy = lastHover.y - obs.y;
+  const distC = Math.hypot(dx, dy);
+  if (distC < 1) {
+    profCtx.fillStyle = '#888';
+    profCtx.fillText('hover a cell away from the observer', 6, 12);
+    return;
+  }
+  const hObs = +hObsEl.value || 0, hTgt = +hTgtEl.value || 0;
+  const D = distC * CELL;
+  const zEye = elevAt(z, obs.x, obs.y) + hObs;
+  const zTgt = elevAt(z, lastHover.x, lastHover.y) + hTgt - D * D / (2 * R_EFF);
+  const steps = Math.max(4, Math.ceil(distC * 4)); // 0.25-cell sampling
+  const gs = [];
+  let lo = Math.min(zEye, zTgt), hi = Math.max(zEye, zTgt);
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps, d = D * t;
+    const g = elevAt(z, obs.x + dx * t, obs.y + dy * t) - d * d / (2 * R_EFF);
+    gs.push(g);
+    if (g < lo) lo = g; if (g > hi) hi = g;
+  }
+  const pad = (hi - lo) * 0.12 + 1;
+  lo -= pad; hi += pad;
+  const X = t => 4 + t * (W - 8);
+  const Y = v => H - 4 - (v - lo) / (hi - lo) * (H - 18); // top strip for caption
+  // Blocking check: same rule as computeViewshed (running max slope from the
+  // eye; samples stop half a cell short of the target).
+  const tgtSlope = (zTgt - zEye) / D;
+  let blockIdx = -1;
+  for (let s = 1; s <= steps; s++) {
+    const t = s / steps;
+    if (t * distC >= distC - 0.5) break;
+    if ((gs[s] - zEye) / (D * t) > tgtSlope + 1e-9) { blockIdx = s; break; }
+  }
+  const visible = blockIdx === -1;
+  // ground fill
+  profCtx.fillStyle = '#37413a';
+  profCtx.beginPath();
+  profCtx.moveTo(X(0), H);
+  for (let s = 0; s <= steps; s++) profCtx.lineTo(X(s / steps), Y(gs[s]));
+  profCtx.lineTo(X(1), H);
+  profCtx.closePath(); profCtx.fill();
+  // line of sight
+  profCtx.strokeStyle = visible ? '#46d75a' : '#d7423a';
+  profCtx.lineWidth = 1.2;
+  profCtx.beginPath(); profCtx.moveTo(X(0), Y(zEye)); profCtx.lineTo(X(1), Y(zTgt)); profCtx.stroke();
+  // eye and target dots
+  profCtx.fillStyle = '#fff';
+  profCtx.beginPath(); profCtx.arc(X(0), Y(zEye), 2.5, 0, Math.PI * 2); profCtx.fill();
+  profCtx.fillStyle = visible ? '#46d75a' : '#d7423a';
+  profCtx.beginPath(); profCtx.arc(X(1), Y(zTgt), 2.5, 0, Math.PI * 2); profCtx.fill();
+  // first blocking sample
+  if (!visible) {
+    const bt = blockIdx / steps;
+    profCtx.strokeStyle = '#ffb020';
+    profCtx.beginPath(); profCtx.moveTo(X(bt), Y(gs[blockIdx]) - 6); profCtx.lineTo(X(bt), Y(gs[blockIdx]) + 6); profCtx.stroke();
+  }
+  profCtx.fillStyle = '#999';
+  profCtx.fillText(`${(D / 1000).toFixed(2)} km - target ${visible ? 'VISIBLE' : 'BLOCKED'}`, 6, 11);
 }
 
 // Map a pointer event to an integer cell, or null if outside the grid.
@@ -683,13 +764,17 @@ cv.addEventListener('pointerup', e => {
 cv.addEventListener('mousemove', e => {
   const c = cellAt(e);
   if (!c) return;
+  lastHover = c;
   const zc = z[c.y * N + c.x];
   let txt = `(${c.x}, ${c.y})  elev ${zc.toFixed(1)} m`;
   if (obs) txt += `  ·  ${(Math.hypot(c.x - obs.x, c.y - obs.y) * CELL / 1000).toFixed(2)} km from observer`;
   readoutEl.textContent = txt;
+  drawProfile();
 });
 cv.addEventListener('mouseleave', () => {
+  lastHover = null;
   readoutEl.textContent = 'Hover the map to read elevation.';
+  drawProfile();
 });
 function clearAll() {
   resetFlight();
