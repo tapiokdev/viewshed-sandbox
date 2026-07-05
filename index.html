@@ -42,6 +42,7 @@
   <label>Observer/drone h (m) <input id="hObs" type="number" value="5" step="0.5"></label>
   <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
   <label>Max range (m) <input id="range" type="number" value="4000" step="500"></label>
+  <label title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need)">Max alt (m) <input id="maxAlt" type="number" value="180" step="10"></label>
   <label title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> elevation color</label>
   <label title="Drone mode: tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
   <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
@@ -75,7 +76,8 @@
   arc falls inside the 6&times;6&nbsp;km map.
   <b>single ridge</b> &rarr; click west of the ridge for a clean shadow behind it.
   <b>Drone mode</b>: click A then B; the drone flies straight at the set height above local
-  ground, and the overlay follows it. Height/range edits apply live mid-flight.
+  ground, and the overlay follows it; the route plans around terrain the drone can't clear
+  under <b>max alt</b>. Height/range edits apply live mid-flight.
   In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
 </div>
 
@@ -228,6 +230,102 @@ function computeViewshed(z, ox, oy, hObs, hTgt, maxRange) {
   return vis;
 }
 
+// ---- drone route planning ----
+// Straight-segment clearance for the continuous passability predicate: a
+// drone at hObs above local ground must stay under maxAlt along the whole
+// segment (sampled every 0.25 cells with the same bilinear surface the
+// flight itself uses).
+function segClear(z, x0, y0, x1, y1, hObs, maxAlt) {
+  const steps = Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 4));
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    if (elevAt(z, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t) + hObs > maxAlt) return false;
+  }
+  return true;
+}
+
+// A* route from (ax,ay) to (bx,by) avoiding cells where ground + hObs would
+// exceed maxAlt. Returns waypoints [{x,y}, ...] (A first, B last) - [A,B]
+// when the straight line is already clear - or null when no route exists.
+// Runs once per launch: a few ms on this grid, negligible next to a single
+// viewshed frame. 8-connected with no corner-cutting (a diagonal step needs
+// both adjacent orthogonal cells open), octile-distance heuristic, lazy-
+// deletion binary min-heap.
+function findPath(z, ax, ay, bx, by, hObs, maxAlt) {
+  if (segClear(z, ax, ay, bx, by, hObs, maxAlt))
+    return [{ x: ax, y: ay }, { x: bx, y: by }];
+  const blocked = i => z[i] + hObs > maxAlt;
+  const start = ay * N + ax, goal = by * N + bx;
+  if (blocked(start) || blocked(goal)) return null;
+  const g = new Float64Array(N * N).fill(Infinity);
+  const f = new Float64Array(N * N).fill(Infinity);
+  const came = new Int32Array(N * N).fill(-1);
+  const closed = new Uint8Array(N * N);
+  const heap = [];
+  const push = i => {
+    heap.push(i);
+    let c = heap.length - 1;
+    while (c > 0) {
+      const p = (c - 1) >> 1;
+      if (f[heap[p]] <= f[heap[c]]) break;
+      [heap[p], heap[c]] = [heap[c], heap[p]]; c = p;
+    }
+  };
+  const pop = () => {
+    const top = heap[0], last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      let p = 0;
+      for (;;) {
+        let m = p; const l = 2 * p + 1, r = l + 1;
+        if (l < heap.length && f[heap[l]] < f[heap[m]]) m = l;
+        if (r < heap.length && f[heap[r]] < f[heap[m]]) m = r;
+        if (m === p) break;
+        [heap[p], heap[m]] = [heap[m], heap[p]]; p = m;
+      }
+    }
+    return top;
+  };
+  const oct = i => {
+    const dx = Math.abs((i % N) - bx), dy = Math.abs(((i / N) | 0) - by);
+    return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy);
+  };
+  g[start] = 0; f[start] = oct(start); push(start);
+  while (heap.length) {
+    const cur = pop();
+    if (cur === goal) {
+      const cells = [];
+      for (let i = goal; i !== -1; i = came[i]) cells.push({ x: i % N, y: (i / N) | 0 });
+      cells.reverse();
+      // String-pulling: greedily skip to the farthest waypoint reachable by
+      // a clear straight segment, so grid staircases become straight legs.
+      const out = [cells[0]];
+      let i = 0;
+      while (i < cells.length - 1) {
+        let j = cells.length - 1;
+        while (j > i + 1 && !segClear(z, cells[i].x, cells[i].y, cells[j].x, cells[j].y, hObs, maxAlt)) j--;
+        out.push(cells[j]); i = j;
+      }
+      return out;
+    }
+    if (closed[cur]) continue;
+    closed[cur] = 1;
+    const cx = cur % N, cy = (cur / N) | 0;
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dy) continue;
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= N || ny >= N) continue;
+        const ni = ny * N + nx;
+        if (closed[ni] || blocked(ni)) continue;
+        if (dx && dy && (blocked(cy * N + nx) || blocked(ny * N + cx))) continue;
+        const ng = g[cur] + (dx && dy ? Math.SQRT2 : 1);
+        if (ng < g[ni]) { g[ni] = ng; f[ni] = ng + oct(ni); came[ni] = cur; push(ni); }
+      }
+  }
+  return null;
+}
+
 // Grayscale hillshade, light from the NW, ~50 deg above the horizon.
 function hillshadeGrid(z) {
   const sh = new Float32Array(N * N);
@@ -262,6 +360,7 @@ const clearEl = document.getElementById('clear');
 const seedEl = document.getElementById('seed');
 const diceEl = document.getElementById('dice');
 const modeEl = document.getElementById('mode');
+const maxAltEl = document.getElementById('maxAlt');
 const coverEl = document.getElementById('cover');
 const replayEl = document.getElementById('replay');
 
@@ -279,6 +378,9 @@ let ptA = null, ptB = null;         // flight endpoints (integer cells)
 let tFlight = 0;                    // progress along the path, 0..1
 let flying = false, rafId = 0, timerId = 0;
 let lastTick = 0;                   // wall-clock time of the previous frame
+let flightPath = null;              // planned waypoints [{x,y},...] from findPath
+let cumLen = [0], totalLen = 0;     // cumulative segment lengths (cells)
+let ceilNote = '';                  // stats note when the ceiling was auto-raised
 const seen = new Uint8Array(N * N); // cells visible at least once this flight
 const DRONE_SPEED = 15;             // ground speed, cells/s (450 m/s map speed)
 const MIN_FLIGHT_S = 4, MAX_FLIGHT_S = 20; // duration clamp for tiny/huge paths
@@ -371,6 +473,12 @@ function render() {
       for (let i = 0; i < N * N; i++) if (seen[i]) nSeen++;
       msg += ` - coverage ${(100 * nSeen / (N * N)).toFixed(1)}%`;
     }
+    if (drone && ptB && flightPath) {
+      const straight = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
+      msg += ` - route ${(totalLen * CELL / 1000).toFixed(2)} km` +
+             (totalLen > straight + 0.5 ? ` (straight ${(straight * CELL / 1000).toFixed(2)} km)` : '') +
+             ceilNote;
+    }
   }
   const OV = 0.42, OVS = 0.30; // overlay opacity: current viewshed / coverage trail
   const showSeen = drone && coverEl.checked;
@@ -393,14 +501,18 @@ function render() {
   ctx.drawImage(off, 0, 0, cv.width, cv.height);
   const s = cv.width / N;
   const px = p => [(p.x + 0.5) * s, (p.y + 0.5) * s];
-  if (drone && ptA) { // flight path + endpoint labels
-    if (ptB) {
-      const [ax, ay] = px(ptA), [bx, by] = px(ptB);
+  if (drone && ptA) { // planned route + endpoint labels
+    if (ptB && flightPath) {
       ctx.setLineDash([6, 5]);
-      ctx.lineWidth = 3; ctx.strokeStyle = '#0009';
-      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-      ctx.lineWidth = 1.2; ctx.strokeStyle = '#fff';
-      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      ctx.beginPath();
+      const [sx, sy] = px(flightPath[0]);
+      ctx.moveTo(sx, sy);
+      for (let i = 1; i < flightPath.length; i++) {
+        const [x, y] = px(flightPath[i]);
+        ctx.lineTo(x, y);
+      }
+      ctx.lineWidth = 3; ctx.strokeStyle = '#0009'; ctx.stroke();
+      ctx.lineWidth = 1.2; ctx.strokeStyle = '#fff'; ctx.stroke();
       ctx.setLineDash([]);
     }
     ctx.font = 'bold 13px system-ui, sans-serif';
@@ -443,18 +555,46 @@ function cancelFlight() {
 function resetFlight() {
   cancelFlight();
   ptA = null; ptB = null; tFlight = 0;
+  flightPath = null; cumLen = [0]; totalLen = 0; ceilNote = '';
   seen.fill(0);
 }
 function startFlight() {
   cancelFlight();
+  const hObs = +hObsEl.value || 0;
+  // The ceiling can never exclude the endpoints: raise it to whatever the
+  // higher of A and B needs (the user-requested lower limit).
+  const userAlt = +maxAltEl.value || 0;
+  const effMaxAlt = Math.max(userAlt,
+    elevAt(z, ptA.x, ptA.y) + hObs, elevAt(z, ptB.x, ptB.y) + hObs);
+  const path = findPath(z, ptA.x, ptA.y, ptB.x, ptB.y, hObs, effMaxAlt);
+  if (!path) { // impassable wall between A and B under this ceiling
+    ptB = null; flightPath = null; obs = { ...ptA };
+    render();
+    statsEl.textContent = 'No route under max altitude - raise it (or pick another B). Drone parked at A.';
+    return;
+  }
+  flightPath = path;
+  cumLen = [0];
+  for (let i = 1; i < path.length; i++)
+    cumLen.push(cumLen[i - 1] + Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y));
+  totalLen = cumLen[cumLen.length - 1];
+  ceilNote = effMaxAlt > userAlt ? ` - ceiling auto-raised to ${Math.round(effMaxAlt)} m for A/B` : '';
   tFlight = 0; seen.fill(0);
   flying = true;
   lastTick = performance.now();
   tick();
 }
+// Position along the planned polyline at a given distance from A (in cells).
+function pathPos(dist) {
+  let i = 1;
+  while (i < cumLen.length - 1 && cumLen[i] < dist) i++;
+  const p0 = flightPath[i - 1], p1 = flightPath[i];
+  const seg = cumLen[i] - cumLen[i - 1];
+  const t = seg > 0 ? (dist - cumLen[i - 1]) / seg : 0;
+  return { x: p0.x + (p1.x - p0.x) * t, y: p0.y + (p1.y - p0.y) * t };
+}
 function tick() {
-  const len = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
-  if (len === 0) { flying = false; obs = { ...ptA }; render(); return; }
+  if (totalLen === 0) { flying = false; obs = { ...ptA }; render(); return; }
   // Wall-clock pacing: progress is driven by elapsed time, not by frame
   // count, so the drone's ground speed stays even no matter how long each
   // synchronous viewshed takes - slow frames just jump farther (choppier,
@@ -463,9 +603,9 @@ function tick() {
   const now = performance.now();
   const dt = Math.min(0.3, (now - lastTick) / 1000);
   lastTick = now;
-  const durS = Math.min(MAX_FLIGHT_S, Math.max(MIN_FLIGHT_S, len / DRONE_SPEED));
+  const durS = Math.min(MAX_FLIGHT_S, Math.max(MIN_FLIGHT_S, totalLen / DRONE_SPEED));
   tFlight = Math.min(1, tFlight + dt / durS);
-  obs = { x: ptA.x + (ptB.x - ptA.x) * tFlight, y: ptA.y + (ptB.y - ptA.y) * tFlight };
+  obs = pathPos(tFlight * totalLen);
   render(); // one synchronous viewshed per frame - the dominant frame cost
   if (flying && tFlight < 1) {
     // Frame interval floor: when the viewshed is cheap (short max range),
@@ -504,10 +644,8 @@ cv.addEventListener('pointermove', e => {
   if (!downPx) return;
   if (!didDrag) {
     if (Math.hypot(e.clientX - downPx.x, e.clientY - downPx.y) < 5) return;
-    didDrag = true;             // drag begins: manual piloting supersedes
-    cancelFlight();             // any planned/running flight
-    ptA = null; ptB = null; tFlight = 0;
-    seen.fill(0);               // fresh coverage for this manual sortie
+    didDrag = true;   // drag begins: manual piloting supersedes any planned
+    resetFlight();    // or running flight; fresh coverage for the sortie
   }
   obs = cellAtF(e);
   render();
