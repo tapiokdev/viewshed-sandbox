@@ -62,7 +62,7 @@
         <span class="sw" style="background:#46d75a"></span><span>visible from observer</span>
         <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
         <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
-        <span class="sw" style="background:#888"></span><span>beyond max range</span>
+        <span class="sw" style="background:#3c3c40"></span><span>beyond max range (dimmed)</span>
       </div>
     </div>
   </div>
@@ -380,7 +380,9 @@ function render() {
       r = r * (1 - OVS) + 80 * OVS; gg = gg * (1 - OVS) + 195 * OVS; b = b * (1 - OVS) + 205 * OVS;
     } else if (vis && vis[i] === 0) {   // hidden: red
       r = r * (1 - OV) + 215 * OV; gg = gg * (1 - OV) + 55 * OV; b = b * (1 - OV) + 50 * OV;
-    }                                   // out of range: bare terrain
+    } else if (vis) {                   // beyond max range: dim - outside the
+      r *= 0.45; gg *= 0.45; b *= 0.45; // analysis, and not visible either
+    }                                   // no observer: bare terrain everywhere
     d[i * 4] = r; d[i * 4 + 1] = gg; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
   }
   octx.putImageData(img, 0, 0);
