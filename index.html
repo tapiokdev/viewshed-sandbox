@@ -624,6 +624,7 @@ function render() {
   }
   statsEl.textContent = msg;
   drawProfile(); // keeps the cross-section live during flights and scrubs
+  queueHash();   // scenario state -> URL (debounced)
 }
 
 // ---- sightline profile inspector ----
@@ -917,8 +918,67 @@ diceEl.addEventListener('click', () => {
 tintEl.addEventListener('change', render);
 for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
 
+// ---- shareable scenario URLs ----
+// Full scenario state lives in the hash, so the current terrain + flight can
+// be bookmarked or sent around. Written (debounced) after every render;
+// restored once on load, re-launching the flight if A and B are present.
+let hashTimer = 0;
+function queueHash() { clearTimeout(hashTimer); hashTimer = setTimeout(syncHash, 300); }
+function syncHash() {
+  const p = ['p=' + presetEl.value, 's=' + seedEl.value, 'm=' + modeEl.value,
+             'h=' + hObsEl.value, 't=' + hTgtEl.value, 'r=' + rangeEl.value,
+             'a=' + maxAltEl.value,
+             'c=' + (tintEl.checked ? 1 : 0) + (coverEl.checked ? 1 : 0)];
+  if (sensors.length) p.push('sn=' + sensors.map(s => s.x + ',' + s.y).join(';'));
+  if (ptA) p.push('A=' + ptA.x + ',' + ptA.y);
+  if (ptB) p.push('B=' + ptB.x + ',' + ptB.y);
+  else if (obs && !ptA) p.push('o=' + (+obs.x.toFixed(1)) + ',' + (+obs.y.toFixed(1)));
+  history.replaceState(null, '', '#' + p.join('&'));
+}
+function loadHash() {
+  if (!location.hash || location.hash.length < 2) return null;
+  const q = {};
+  for (const kv of location.hash.slice(1).split('&')) {
+    const i = kv.indexOf('=');
+    if (i > 0) q[kv.slice(0, i)] = kv.slice(i + 1);
+  }
+  const pt = (s, round) => {
+    const m = String(s).split(',');
+    let x = +m[0], y = +m[1];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (round) { x = Math.round(x); y = Math.round(y); }
+    return { x: Math.max(0, Math.min(N - 1, x)), y: Math.max(0, Math.min(N - 1, y)) };
+  };
+  const hasOpt = (el, v) => [...el.options].some(o => o.value === v);
+  if (q.p && hasOpt(presetEl, q.p)) presetEl.value = q.p;
+  if (q.s !== undefined) seedEl.value = q.s;
+  if (q.m && hasOpt(modeEl, q.m)) modeEl.value = q.m;
+  if (q.h !== undefined) hObsEl.value = q.h;
+  if (q.t !== undefined) hTgtEl.value = q.t;
+  if (q.r !== undefined) rangeEl.value = q.r;
+  if (q.a !== undefined) maxAltEl.value = q.a;
+  if (q.c) { tintEl.checked = q.c[0] !== '0'; coverEl.checked = q.c[1] === '1'; }
+  if (q.sn) sensors = q.sn.split(';').map(s => pt(s, true)).filter(Boolean);
+  return {
+    A: q.A ? pt(q.A, true) : null,
+    B: q.B ? pt(q.B, true) : null,
+    o: q.o ? pt(q.o, false) : null
+  };
+}
+
+const restored = loadHash();
 document.body.dataset.mode = modeEl.value;
-regen();
+document.getElementById('visLegend').textContent =
+  modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
+setTerrain(presetEl.value, Math.trunc(+seedEl.value) || 1);
+if (restored && restored.A && modeEl.value === 'drone') {
+  ptA = restored.A; obs = { ...ptA };
+  if (restored.B) { ptB = restored.B; startFlight(); } else render();
+} else if (restored && restored.o) {
+  obs = restored.o; render();
+} else {
+  render();
+}
 </script>
 </body>
 </html>
