@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Terrain Viewshed Analyzer</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; background: #1b1b1f; color: #ddd; }
+  #controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  label { font-size: 13px; }
+  input[type=number] { width: 72px; }
+  canvas { image-rendering: pixelated; border: 1px solid #444; cursor: crosshair; }
+  #stats { font-size: 13px; color: #9c9; min-height: 1.2em; margin-top: 8px; }
+  #hint { font-size: 12px; color: #888; max-width: 600px; margin-top: 6px; line-height: 1.4; }
+</style>
+</head>
+<body>
+<div id="controls">
+  <label>Terrain <select id="preset">
+    <option value="hills" selected>hills</option>
+    <option value="flat">flat plane</option>
+    <option value="ridge">single ridge</option>
+  </select></label>
+  <label>Observer h (m) <input id="hObs" type="number" value="2" step="0.5"></label>
+  <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
+  <label>Max range (m) <input id="range" type="number" value="9000" step="500"></label>
+</div>
+<canvas id="cv" width="600" height="600"></canvas>
+<div id="stats">Click the map to place the observer.</div>
+<div id="hint">
+  Verification: <b>flat plane</b> &rarr; visible disk out to the curvature/refraction horizon
+  &radic;(2&middot;R<sub>eff</sub>&middot;h) &asymp; 5.45&nbsp;km at h&nbsp;=&nbsp;2&nbsp;m &mdash; click near a corner
+  (or drop observer height to ~0.5&nbsp;m) so the horizon arc falls inside the 6&times;6&nbsp;km map.
+  <b>single ridge</b> &rarr; click west of the ridge for a clean shadow behind it.
+</div>
+
+<script id="core">
+// ---------- pure computation (no DOM; also exercised by the node test) ----------
+const N = 200;    // grid is N x N cells
+const CELL = 30;  // cell size, meters
+
+// Effective Earth radius = 7/6 x real radius. Standard atmospheric refraction
+// bends near-horizontal rays slightly downward (toward the denser air below),
+// which lets sightlines reach a bit past the geometric horizon. The classic
+// equivalent model is straight rays over an Earth inflated to 7/6 R, so the
+// curvature drop of a point at ground distance d below the observer's tangent
+// plane is d^2 / (2 * R_EFF).
+const R_EFF = 6371000 * 7 / 6;
+
+function genTerrain(preset) {
+  const z = new Float32Array(N * N);
+  if (preset === 'flat') return z; // all zeros
+  if (preset === 'ridge') {
+    // North-south ridge: gaussian cross-section, crest at column 130,
+    // 160 m tall, sigma 8 cells (240 m).
+    for (let y = 0; y < N; y++)
+      for (let x = 0; x < N; x++)
+        z[y * N + x] = 160 * Math.exp(-((x - 130) ** 2) / (2 * 8 * 8));
+    return z;
+  }
+  // 'hills': gentle sine swell plus a few gaussian hills.
+  const g = (x, y, cx, cy, s, a) =>
+    a * Math.exp(-(((x - cx) ** 2 + (y - cy) ** 2)) / (2 * s * s));
+  for (let y = 0; y < N; y++)
+    for (let x = 0; x < N; x++) {
+      let v = 25 * Math.sin(x * 0.045) + 20 * Math.sin(y * 0.06 + 1.3)
+            + 12 * Math.sin((x + y) * 0.03);
+      v += g(x, y, 60, 70, 22, 90) + g(x, y, 140, 50, 16, 70)
+         + g(x, y, 110, 150, 28, 110) + g(x, y, 40, 165, 14, 55);
+      z[y * N + x] = v + 60;
+    }
+  return z;
+}
+
+// Bilinear ground elevation at continuous grid coords (gx, gy).
+// Sub-cell sampling rationale: a sightline between two cell centers almost
+// never passes through other cell centers. Snapping each ray sample to the
+// nearest cell turns the terrain into a staircase whose shape depends on ray
+// direction, so diagonal rays produce aliased fringes of false blocking /
+// false visibility along viewshed edges. Bilinear interpolation instead
+// treats the grid as one continuous surface -- the same surface for every ray
+// direction -- giving smooth, direction-independent results. The cost is that
+// a knife-edge crest is rounded off by up to one cell, the usual accepted
+// trade-off vs. nearest-neighbor.
+function elevAt(z, gx, gy) {
+  const x0 = Math.max(0, Math.min(N - 2, Math.floor(gx)));
+  const y0 = Math.max(0, Math.min(N - 2, Math.floor(gy)));
+  const fx = Math.max(0, Math.min(1, gx - x0));
+  const fy = Math.max(0, Math.min(1, gy - y0));
+  const i = y0 * N + x0;
+  const top = z[i] * (1 - fx) + z[i + 1] * fx;
+  const bot = z[i + N] * (1 - fx) + z[i + N + 1] * fx;
+  return top * (1 - fy) + bot * fy;
+}
+
+// Per-cell ray cast. Returns Uint8Array: 0 = hidden, 1 = visible, 2 = beyond max range.
+function computeViewshed(z, ox, oy, hObs, hTgt, maxRange) {
+  const vis = new Uint8Array(N * N);
+  const zObs = z[oy * N + ox] + hObs;   // eye height on top of ground
+  const STEP = 0.5;                     // ray sample spacing, in cells (15 m)
+  // Slope tolerance against float noise. Keep it tiny: near a grazing horizon
+  // the occlusion depth grows only quadratically with distance, so a slope
+  // epsilon of e translates to an outward horizon shift of sqrt(2*R_EFF*e*d)
+  // (~9 m at 1e-9, but ~90 m already at 1e-7).
+  const EPS = 1e-9;
+  for (let ty = 0; ty < N; ty++) {
+    for (let tx = 0; tx < N; tx++) {
+      const idx = ty * N + tx;
+      const dx = tx - ox, dy = ty - oy;
+      const distCells = Math.hypot(dx, dy);
+      const d = distCells * CELL;
+      if (d > maxRange) { vis[idx] = 2; continue; }
+      if (distCells === 0) { vis[idx] = 1; continue; }
+      // Target point: ground + target height, lowered by the curvature drop.
+      const zT = z[idx] + hTgt - d * d / (2 * R_EFF);
+      const tgtSlope = (zT - zObs) / d;
+      // March the ray; the target is visible iff no intermediate terrain
+      // sample subtends a steeper slope from the eye than the target does.
+      // Stop sampling half a cell short of the target so the target's own
+      // ground (which the target height sits on) can't occlude it.
+      let blocked = false;
+      for (let s = 1; s * STEP < distCells - 0.5; s++) {
+        const t = (s * STEP) / distCells;
+        const sd = s * STEP * CELL;
+        const zi = elevAt(z, ox + dx * t, oy + dy * t) - sd * sd / (2 * R_EFF);
+        if ((zi - zObs) / sd > tgtSlope + EPS) { blocked = true; break; }
+      }
+      vis[idx] = blocked ? 0 : 1;
+    }
+  }
+  return vis;
+}
+
+// Grayscale hillshade, light from the NW, ~50 deg above the horizon.
+function hillshadeGrid(z) {
+  const sh = new Float32Array(N * N);
+  const L = [-0.45, -0.45, 0.77]; // toward upper-left, unit-ish
+  for (let y = 0; y < N; y++)
+    for (let x = 0; x < N; x++) {
+      const x0 = Math.max(x - 1, 0), x1 = Math.min(x + 1, N - 1);
+      const y0 = Math.max(y - 1, 0), y1 = Math.min(y + 1, N - 1);
+      const dzdx = (z[y * N + x1] - z[y * N + x0]) / ((x1 - x0) * CELL);
+      const dzdy = (z[y1 * N + x] - z[y0 * N + x]) / ((y1 - y0) * CELL);
+      // surface normal is proportional to (-dzdx, -dzdy, 1)
+      const inv = 1 / Math.hypot(dzdx, dzdy, 1);
+      const dot = (-dzdx * L[0] - dzdy * L[1] + L[2]) * inv;
+      sh[y * N + x] = Math.max(0, Math.min(1, dot));
+    }
+  return sh;
+}
+</script>
+
+<script>
+// ---------- UI ----------
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const statsEl = document.getElementById('stats');
+const presetEl = document.getElementById('preset');
+const hObsEl = document.getElementById('hObs');
+const hTgtEl = document.getElementById('hTgt');
+const rangeEl = document.getElementById('range');
+
+const off = document.createElement('canvas');
+off.width = N; off.height = N;
+const octx = off.getContext('2d');
+const img = octx.createImageData(N, N);
+
+let z = genTerrain(presetEl.value);
+let shade = hillshadeGrid(z);
+let obs = null; // {x, y} cell of the observer
+
+function render() {
+  let vis = null, msg = 'Click the map to place the observer.';
+  if (obs) {
+    const t0 = performance.now();
+    vis = computeViewshed(z, obs.x, obs.y,
+      +hObsEl.value || 0, +hTgtEl.value || 0, +rangeEl.value || 0);
+    const ms = performance.now() - t0;
+    let nVis = 0, nRange = 0;
+    for (let i = 0; i < N * N; i++) {
+      if (vis[i] !== 2) nRange++;
+      if (vis[i] === 1) nVis++;
+    }
+    msg = `Visible: ${nVis} of ${nRange} in-range cells (${(100 * nVis / nRange).toFixed(1)}%) - ${ms.toFixed(0)} ms`;
+  }
+  const A = 0.38; // overlay opacity
+  const d = img.data;
+  for (let i = 0; i < N * N; i++) {
+    const g = 30 + shade[i] * 215; // grayscale hillshade base
+    let r = g, gg = g, b = g;
+    if (vis && vis[i] === 1) {        // visible: green tint
+      r = g * (1 - A) + 70 * A; gg = g * (1 - A) + 215 * A; b = g * (1 - A) + 90 * A;
+    } else if (vis && vis[i] === 0) { // hidden: red tint
+      r = g * (1 - A) + 215 * A; gg = g * (1 - A) + 55 * A; b = g * (1 - A) + 50 * A;
+    }                                 // out of range: bare hillshade
+    d[i * 4] = r; d[i * 4 + 1] = gg; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
+  }
+  octx.putImageData(img, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, cv.width, cv.height);
+  if (obs) { // observer marker
+    const s = cv.width / N, mx = (obs.x + 0.5) * s, my = (obs.y + 0.5) * s;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(mx - 9, my); ctx.lineTo(mx + 9, my);
+    ctx.moveTo(mx, my - 9); ctx.lineTo(mx, my + 9);
+    ctx.stroke();
+  }
+  statsEl.textContent = msg;
+}
+
+cv.addEventListener('click', e => {
+  const r = cv.getBoundingClientRect();
+  obs = {
+    x: Math.max(0, Math.min(N - 1, Math.floor((e.clientX - r.left) / r.width * N))),
+    y: Math.max(0, Math.min(N - 1, Math.floor((e.clientY - r.top) / r.height * N)))
+  };
+  render();
+});
+presetEl.addEventListener('change', () => {
+  z = genTerrain(presetEl.value);
+  shade = hillshadeGrid(z);
+  render();
+});
+for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
+
+render();
+</script>
+</body>
+</html>
