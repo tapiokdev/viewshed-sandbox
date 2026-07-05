@@ -275,8 +275,12 @@ let obs = null;           // {x, y} observer position; fractional mid-flight
 // Drone flight state (mode "drone A->B")
 let ptA = null, ptB = null;         // flight endpoints (integer cells)
 let tFlight = 0;                    // progress along the path, 0..1
-let flying = false, rafId = 0;
+let flying = false, rafId = 0, timerId = 0;
+let lastTick = 0;                   // wall-clock time of the previous frame
 const seen = new Uint8Array(N * N); // cells visible at least once this flight
+const DRONE_SPEED = 15;             // ground speed, cells/s (450 m/s map speed)
+const MIN_FLIGHT_S = 4, MAX_FLIGHT_S = 20; // duration clamp for tiny/huge paths
+const MIN_FRAME_MS = 60;            // frame interval floor (~16 fps cap)
 
 // Hypsometric ramp: classic low-green -> tan -> brown -> snowy-peak progression.
 // Returned as an [r,g,b] triple for a normalized elevation t in [0,1].
@@ -429,6 +433,7 @@ function cellAt(e) {
 function cancelFlight() {
   flying = false;
   if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+  if (timerId) { clearTimeout(timerId); timerId = 0; }
 }
 function resetFlight() {
   cancelFlight();
@@ -439,20 +444,32 @@ function startFlight() {
   cancelFlight();
   tFlight = 0; seen.fill(0);
   flying = true;
+  lastTick = performance.now();
   tick();
 }
 function tick() {
   const len = Math.hypot(ptB.x - ptA.x, ptB.y - ptA.y);
   if (len === 0) { flying = false; obs = { ...ptA }; render(); return; }
-  // ~60 frames per flight regardless of path length; each frame costs one
-  // synchronous viewshed (~100-250 ms), so a flight runs ~8-20 s. Choppy by
-  // design - no workers, per GOAL.md.
-  const step = Math.min(3, Math.max(0.5, len / 60));
-  tFlight = Math.min(1, tFlight + step / len);
+  // Wall-clock pacing: progress is driven by elapsed time, not by frame
+  // count, so the drone's ground speed stays even no matter how long each
+  // synchronous viewshed takes - slow frames just jump farther (choppier,
+  // not slower). dt is clamped so a hidden tab or GC stall can't teleport
+  // the drone.
+  const now = performance.now();
+  const dt = Math.min(0.3, (now - lastTick) / 1000);
+  lastTick = now;
+  const durS = Math.min(MAX_FLIGHT_S, Math.max(MIN_FLIGHT_S, len / DRONE_SPEED));
+  tFlight = Math.min(1, tFlight + dt / durS);
   obs = { x: ptA.x + (ptB.x - ptA.x) * tFlight, y: ptA.y + (ptB.y - ptA.y) * tFlight };
-  render();
-  if (flying && tFlight < 1) rafId = requestAnimationFrame(tick);
-  else flying = false; // drone parks at B, viewshed stays live
+  render(); // one synchronous viewshed per frame - the dominant frame cost
+  if (flying && tFlight < 1) {
+    // Frame interval floor: when the viewshed is cheap (short max range),
+    // don't burn a full core recomputing at 60 fps.
+    const wait = Math.max(0, MIN_FRAME_MS - (performance.now() - now));
+    timerId = setTimeout(() => { timerId = 0; rafId = requestAnimationFrame(tick); }, wait);
+  } else {
+    flying = false; // drone parks at B, viewshed stays live
+  }
 }
 
 cv.addEventListener('click', e => {
