@@ -6,9 +6,12 @@
 <style>
   body { font-family: system-ui, sans-serif; margin: 16px; background: #1b1b1f; color: #ddd; }
   h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px; }
-  #controls { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .ctlrow { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .ctlrow .rowtag { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: .06em; width: 58px; }
   label { font-size: 13px; }
   input[type=number] { width: 72px; }
+  /* drone-only controls hide in other modes */
+  body:not([data-mode=drone]) .drone-only { display: none; }
   .stage { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
   canvas#cv { image-rendering: pixelated; border: 1px solid #444; cursor: crosshair; touch-action: none; }
   #side { display: flex; flex-direction: column; gap: 14px; font-size: 12px; max-width: 220px; }
@@ -21,32 +24,39 @@
   #readout { font-size: 12px; color: #9bd; min-height: 1.2em; font-variant-numeric: tabular-nums; }
   #stats { font-size: 13px; color: #9c9; min-height: 1.2em; margin-top: 8px; }
   #hint { font-size: 12px; color: #888; max-width: 620px; margin-top: 6px; line-height: 1.4; }
+  #hint summary { cursor: pointer; color: #9ab; user-select: none; }
 </style>
 </head>
 <body>
 <h1>Terrain Viewshed Analyzer</h1>
 <div id="controls">
-  <label>Terrain <select id="preset">
-    <option value="hills">rolling hills (procedural)</option>
-    <option value="ridged" selected>ridged mountains (procedural)</option>
-    <option value="flat">flat plane</option>
-    <option value="ridge">single ridge</option>
-  </select></label>
-  <label title="Seed for the procedural presets; flat plane and single ridge ignore it">Seed
-    <input id="seed" type="number" value="1" step="1"></label>
-  <button id="dice" type="button" title="Random seed">randomize</button>
-  <label>Mode <select id="mode">
-    <option value="single">observer (click)</option>
-    <option value="drone" selected>drone A&rarr;B</option>
-  </select></label>
-  <label>Observer/drone h (m) <input id="hObs" type="number" value="5" step="0.5"></label>
-  <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
-  <label>Max range (m) <input id="range" type="number" value="4000" step="500"></label>
-  <label title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need)">Max alt (m) <input id="maxAlt" type="number" value="180" step="10"></label>
-  <label title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> elevation color</label>
-  <label title="Drone mode: tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
-  <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
-  <button id="clear" type="button">clear observer</button>
+  <div class="ctlrow">
+    <span class="rowtag">Terrain</span>
+    <select id="preset">
+      <option value="hills">rolling hills (procedural)</option>
+      <option value="ridged" selected>ridged mountains (procedural)</option>
+      <option value="flat">flat plane</option>
+      <option value="ridge">single ridge</option>
+    </select>
+    <label title="Seed for the procedural presets; flat plane and single ridge ignore it">Seed
+      <input id="seed" type="number" value="1" step="1"></label>
+    <button id="dice" type="button" title="Random seed">randomize</button>
+    <label title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> elevation color</label>
+  </div>
+  <div class="ctlrow">
+    <span class="rowtag">Analysis</span>
+    <select id="mode">
+      <option value="single">observer (click)</option>
+      <option value="drone" selected>drone A&rarr;B</option>
+    </select>
+    <label>Observer/drone h (m) <input id="hObs" type="number" value="5" step="0.5"></label>
+    <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
+    <label>Max range (m) <input id="range" type="number" value="4000" step="500"></label>
+    <label class="drone-only" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need)">Max alt (m) <input id="maxAlt" type="number" value="180" step="10"></label>
+    <label class="drone-only" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
+    <button id="replay" type="button" class="drone-only" title="Re-fly the current A&rarr;B path">replay flight</button>
+    <button id="clear" type="button">clear observer</button>
+  </div>
 </div>
 <div class="stage">
   <canvas id="cv" width="600" height="600"></canvas>
@@ -69,7 +79,8 @@
   </div>
 </div>
 <div id="stats">Click the map to place the observer.</div>
-<div id="hint">
+<details id="hint">
+  <summary>help &amp; verification tips</summary>
   Verification: <b>flat plane</b> &rarr; visible disk out to the curvature/refraction horizon
   &radic;(2&middot;R<sub>eff</sub>&middot;h) &asymp; 5.45&nbsp;km at h&nbsp;=&nbsp;2&nbsp;m &mdash; raise max range to
   &ge;9000&nbsp;m, then click near a corner (or drop observer height to ~0.5&nbsp;m) so the horizon
@@ -79,7 +90,7 @@
   ground, and the overlay follows it; the route plans around terrain the drone can't clear
   under <b>max alt</b>. Height/range edits apply live mid-flight.
   In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
-</div>
+</details>
 
 <script id="core">
 // ---------- pure computation (no DOM; also exercised by the node test) ----------
@@ -691,10 +702,13 @@ clearEl.addEventListener('click', clearAll);
 // it, so clicks landing there are excluded to keep those interactions
 // non-destructive.
 document.addEventListener('click', e => {
-  if ((obs || ptA) && !e.target.closest('#cv, #controls, #side')) clearAll();
+  if ((obs || ptA) && !e.target.closest('#cv, #controls, #side, #hint')) clearAll();
 });
 replayEl.addEventListener('click', () => { if (ptA && ptB) startFlight(); });
-modeEl.addEventListener('change', clearAll);
+modeEl.addEventListener('change', () => {
+  document.body.dataset.mode = modeEl.value; // drives drone-only control visibility
+  clearAll();
+});
 coverEl.addEventListener('change', render);
 function regen() {
   resetFlight();                          // terrain changes under the path
@@ -711,6 +725,7 @@ diceEl.addEventListener('click', () => {
 tintEl.addEventListener('change', render);
 for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
 
+document.body.dataset.mode = modeEl.value;
 regen();
 </script>
 </body>
