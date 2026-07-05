@@ -41,7 +41,7 @@
   </select></label>
   <label>Observer/drone h (m) <input id="hObs" type="number" value="5" step="0.5"></label>
   <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
-  <label>Max range (m) <input id="range" type="number" value="3000" step="500"></label>
+  <label>Max range (m) <input id="range" type="number" value="4000" step="500"></label>
   <label title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> elevation color</label>
   <label title="Drone mode: tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
   <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
@@ -76,6 +76,7 @@
   <b>single ridge</b> &rarr; click west of the ridge for a clean shadow behind it.
   <b>Drone mode</b>: click A then B; the drone flies straight at the set height above local
   ground, and the overlay follows it. Height/range edits apply live mid-flight.
+  In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
 </div>
 
 <script id="core">
@@ -360,7 +361,8 @@ function render() {
     }
     const oz = elevAt(z, obs.x, obs.y);
     const fmt = v => Number.isInteger(v) ? v : v.toFixed(1);
-    const who = drone ? (ptB ? `Drone ${Math.round(tFlight * 100)}% A→B` : 'Drone parked at A')
+    const who = drone ? (ptB ? `Drone ${Math.round(tFlight * 100)}% A→B`
+                             : ptA ? 'Drone parked at A' : 'Drone (manual)')
                       : 'Observer';
     msg = `${who} at (${fmt(obs.x)}, ${fmt(obs.y)}), ground ${oz.toFixed(0)} m + ${(+hObsEl.value || 0)} m. ` +
           `Visible: ${nVis} of ${nRange} in-range (${(100 * nVis / nRange).toFixed(1)}%) - ${ms.toFixed(0)} ms`;
@@ -475,7 +477,45 @@ function tick() {
   }
 }
 
-cv.addEventListener('click', e => {
+// Fractional cell coords under the pointer, clamped to the grid (so a drag
+// that wanders off the canvas slides along the edge instead of dropping out).
+function cellAtF(e) {
+  const r = cv.getBoundingClientRect();
+  const cl = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  return {
+    x: cl((e.clientX - r.left) / r.width * N - 0.5, 0, N - 1),
+    y: cl((e.clientY - r.top) / r.height * N - 0.5, 0, N - 1)
+  };
+}
+
+// Click vs drag: a plain click keeps the per-mode meaning (place observer /
+// set A then B), while moving >5 px with the button held becomes a scrub -
+// the observer/drone follows the cursor with the viewshed recomputed live.
+// Each recompute is synchronous, so the browser coalesces pointer moves and
+// the scrub self-throttles to viewshed speed.
+let downPx = null, didDrag = false;
+
+cv.addEventListener('pointerdown', e => {
+  downPx = { x: e.clientX, y: e.clientY };
+  didDrag = false;
+  cv.setPointerCapture(e.pointerId);
+});
+cv.addEventListener('pointermove', e => {
+  if (!downPx) return;
+  if (!didDrag) {
+    if (Math.hypot(e.clientX - downPx.x, e.clientY - downPx.y) < 5) return;
+    didDrag = true;             // drag begins: manual piloting supersedes
+    cancelFlight();             // any planned/running flight
+    ptA = null; ptB = null; tFlight = 0;
+    seen.fill(0);               // fresh coverage for this manual sortie
+  }
+  obs = cellAtF(e);
+  render();
+});
+cv.addEventListener('pointerup', e => {
+  const wasDrag = didDrag;
+  downPx = null; didDrag = false;
+  if (wasDrag) return;          // scrub already parked obs at the last position
   const c = cellAt(e);
   if (!c) return;
   if (modeEl.value === 'drone') {
