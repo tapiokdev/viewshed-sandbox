@@ -328,6 +328,12 @@ cv.addEventListener('mouseleave', () => {
   readoutEl.textContent = 'Hover the map to read elevation.';
 });
 clearEl.addEventListener('click', () => { obs = null; render(); });
+// Clicking off the map (empty page, title, hint) also clears the observer.
+// The canvas places the observer, and the controls/legend relate to it, so
+// clicks landing there are excluded to keep those interactions non-destructive.
+document.addEventListener('click', e => {
+  if (obs && !e.target.closest('#cv, #controls, #side')) { obs = null; render(); }
+});
 presetEl.addEventListener('change', () => { setTerrain(presetEl.value); render(); });
 tintEl.addEventListener('change', render);
 for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
