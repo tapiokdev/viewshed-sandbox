@@ -899,7 +899,20 @@ modeEl.addEventListener('change', () => {
   document.body.dataset.mode = modeEl.value; // drives drone-only control visibility
   document.getElementById('visLegend').textContent =
     modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
-  clearAll();
+  // Preserve the marked point across mode switches: an observer becomes a
+  // target and vice versa (the role-bound height inputs reinterpret it
+  // automatically), and entering drone mode parks the drone there as A.
+  // Leaving drone mode keeps the drone's current spot - even mid-flight -
+  // as the new observer/target. Flight plan and coverage don't survive the
+  // switch; sensors do.
+  const keep = obs ? { ...obs } : null;
+  resetFlight();
+  obs = keep;
+  if (obs && modeEl.value === 'drone') {
+    ptA = { x: Math.round(obs.x), y: Math.round(obs.y) };
+    obs = { ...ptA };
+  }
+  render();
 });
 coverEl.addEventListener('change', render);
 function regen() {
