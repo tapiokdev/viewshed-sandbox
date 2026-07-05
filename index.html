@@ -10,6 +10,18 @@
   .ctlrow .rowtag { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: .06em; width: 58px; }
   label { font-size: 13px; }
   input[type=number] { width: 72px; }
+  button, select, input[type=number] {
+    background: #2a2a30; color: #ddd; border: 1px solid #555;
+    border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 13px;
+  }
+  button { cursor: pointer; }
+  button:hover:not(:disabled), select:hover { border-color: #888; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  #replay { border-color: #3f7a4c; color: #7fd58f; }
+  #replay:hover:not(:disabled) { border-color: #5fae6e; }
+  .actions { display: flex; gap: 8px; margin-left: auto; }
+  input[type=range] { accent-color: #7fd58f; width: 140px; vertical-align: middle; }
+  .rangeval { display: inline-block; min-width: 44px; font-variant-numeric: tabular-nums; color: #bbb; }
   /* drone-only controls hide in other modes */
   body:not([data-mode=drone]) .drone-only { display: none; }
   /* sensor controls appear once the first sensor is placed */
@@ -25,7 +37,8 @@
   .sw { width: 14px; height: 14px; border-radius: 2px; border: 1px solid #0004; }
   #readout { font-size: 12px; color: #9bd; min-height: 1.2em; font-variant-numeric: tabular-nums; }
   #prof { border: 1px solid #444; border-radius: 2px; background: #141416; }
-  #stats { font-size: 13px; color: #9c9; min-height: 1.2em; margin-top: 8px; }
+  #gestures { font-size: 12px; color: #777; margin-top: 6px; }
+  #stats { font-size: 13px; color: #9c9; min-height: 1.2em; margin-top: 4px; }
   #hint { font-size: 12px; color: #888; max-width: 620px; margin-top: 6px; line-height: 1.4; }
   #hint summary { cursor: pointer; color: #9ab; user-select: none; }
 </style>
@@ -56,12 +69,16 @@
     <label>Observer/drone h (m) <input id="hObs" type="number" value="5" step="0.5"></label>
     <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
     <label>Max range (m) <input id="range" type="number" value="4000" step="500"></label>
-    <label class="drone-only" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need)">Max alt (m) <input id="maxAlt" type="number" value="180" step="10"></label>
+    <label class="drone-only" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need). Drag to preview the impassable walls on the map.">Max alt
+      <input id="maxAlt" type="range" min="0" max="400" value="180" step="10">
+      <span class="rangeval" id="maxAltVal">180 m</span></label>
     <label class="drone-only" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
-    <button id="replay" type="button" class="drone-only" title="Re-fly the current A&rarr;B path">replay flight</button>
     <label class="sensor-only" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch">Sensor h (m) <input id="sensorH" type="number" value="10" step="1"></label>
-    <button id="clearSn" type="button" class="sensor-only">clear sensors</button>
-    <button id="clear" type="button">clear observer</button>
+    <span class="actions">
+      <button id="replay" type="button" class="drone-only" title="Re-fly the current A&rarr;B path">replay flight</button>
+      <button id="clearSn" type="button" class="sensor-only">clear sensors</button>
+      <button id="clear" type="button">clear observer</button>
+    </span>
   </div>
 </div>
 <div class="stage">
@@ -88,6 +105,7 @@
     </div>
   </div>
 </div>
+<div id="gestures"></div>
 <div id="stats">Click the map to place the observer.</div>
 <details id="hint">
   <summary>help &amp; verification tips</summary>
@@ -480,6 +498,26 @@ let expFrac = null;                 // exposed fraction of the planned route
 function updateSensorUI() {
   document.body.classList.toggle('has-sensors', sensors.length > 0);
 }
+
+const gesturesEl = document.getElementById('gestures');
+const maxAltValEl = document.getElementById('maxAltVal');
+function updateGestures() {
+  const click = { single: 'click: place observer', drone: 'click: set A, then B',
+                  inverse: 'click: place target' }[modeEl.value];
+  gesturesEl.textContent = `${click}  ·  drag: pilot live  ·  right-click: place/remove sensor`;
+}
+
+// While the max-alt slider is being adjusted, the map shows which terrain the
+// drone can't clear (ground + drone h > ceiling) so routes can be designed
+// around the walls; the preview fades ~1.2 s after the last adjustment.
+let ceilPreviewUntil = 0, ceilTimer = 0;
+maxAltEl.addEventListener('input', () => {
+  maxAltValEl.textContent = maxAltEl.value + ' m';
+  ceilPreviewUntil = performance.now() + 1200;
+  clearTimeout(ceilTimer);
+  ceilTimer = setTimeout(render, 1250); // one-shot re-render to clear the preview
+  render();
+});
 const seen = new Uint8Array(N * N); // cells visible at least once this flight
 const DRONE_SPEED = 15;             // ground speed, cells/s (450 m/s map speed)
 const MIN_FLIGHT_S = 4, MAX_FLIGHT_S = 20; // duration clamp for tiny/huge paths
@@ -590,6 +628,10 @@ function render() {
   }
   const OV = 0.42, OVS = 0.30; // overlay opacity: current viewshed / coverage trail
   const showSeen = drone && coverEl.checked;
+  // Ceiling preview (while the max-alt slider is being adjusted): mark the
+  // walls the drone can't clear in purple, on top of everything else.
+  const showCeil = drone && performance.now() < ceilPreviewUntil;
+  const ceilAlt = +maxAltEl.value || 0, ceilH = +hObsEl.value || 0;
   const d = img.data;
   for (let i = 0; i < N * N; i++) {
     let [r, gg, b] = baseColor(i);
@@ -602,6 +644,9 @@ function render() {
     } else if (vis) {                   // beyond max range: dim - outside the
       r *= 0.45; gg *= 0.45; b *= 0.45; // analysis, and not visible either
     }                                   // no observer: bare terrain everywhere
+    if (showCeil && z[i] + ceilH > ceilAlt) { // drone-impassable wall: purple
+      r = r * 0.35 + 118 * 0.55; gg = gg * 0.35 + 62 * 0.55; b = b * 0.35 + 190 * 0.55;
+    }
     d[i * 4] = r; d[i * 4 + 1] = gg; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
   }
   octx.putImageData(img, 0, 0);
@@ -662,6 +707,7 @@ function render() {
     ctx.stroke();
   }
   statsEl.textContent = msg;
+  replayEl.disabled = !(ptA && ptB); // affordance: dimmed until re-flyable
   drawProfile(); // keeps the cross-section live during flights and scrubs
   queueHash();   // scenario state -> URL (debounced)
 }
@@ -940,6 +986,7 @@ document.addEventListener('click', e => {
 replayEl.addEventListener('click', () => { if (ptA && ptB) startFlight(); });
 modeEl.addEventListener('change', () => {
   document.body.dataset.mode = modeEl.value; // drives drone-only control visibility
+  updateGestures();
   document.getElementById('visLegend').textContent =
     modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
   // Preserve the marked point across mode switches: an observer becomes a
@@ -1026,6 +1073,8 @@ function loadHash() {
 
 const restored = loadHash();
 updateSensorUI();
+updateGestures();
+maxAltValEl.textContent = maxAltEl.value + ' m';
 document.body.dataset.mode = modeEl.value;
 document.getElementById('visLegend').textContent =
   modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
