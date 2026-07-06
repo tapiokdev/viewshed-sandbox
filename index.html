@@ -2,126 +2,119 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Terrain Viewshed Sandbox</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 16px; background: #1b1b1f; color: #ddd; }
-  h1 { font-size: 18px; font-weight: 600; margin: 0 0 12px;
-       display: flex; align-items: center; max-width: 838px; }
-  #reset { margin-left: auto; font-size: 12px; color: #c99; border-color: #744; }
-  #reset:hover { border-color: #b66 !important; color: #ecc; }
-  .ctlrow { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-  .ctlrow .rowtag { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: .06em; width: 58px; }
-  label { font-size: 13px; }
-  input[type=number] { width: 72px; }
+  /* Design tokens (PLAN.local.md §3). Chrome is achromatic-warm: every
+     saturated hue on screen belongs to the map overlays, not the UI. */
+  :root {
+    --bg: #16161a;        /* page */
+    --panel: #1e1e23;     /* grouped sections */
+    --well: #131316;      /* inset wells: canvas surround, status bar */
+    --ink: #d6d4cc;       /* primary text */
+    --muted: #8b897f;     /* labels, captions */
+    --line: #34343a;      /* hairlines */
+    --accent: #e4dfd0;    /* bone: focus rings, active segment, thumbs */
+    --go: #7fd58f;        /* launch/resume affordances */
+    --warn: #ffd23f;      /* route-pending attention */
+    --danger: #c96a5f;    /* destructive: reset, clears */
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  /* The app is centered and sections show/hide with app state; reserving the
+     scrollbar gutter keeps a page-height change from shifting the layout
+     sideways under a drag in progress. */
+  html { scrollbar-gutter: stable; }
+  body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--ink); }
+  .app { width: max-content; max-width: 100%; margin: 0 auto; padding: 14px 18px; }
+  header { display: flex; align-items: center; gap: 12px;
+           padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+  h1 { margin: 0; font: 600 13px var(--mono); text-transform: uppercase; letter-spacing: .22em; }
+  header #reset { margin-left: auto; }
+  .layout { display: grid; grid-template-columns: max-content 292px; gap: 14px; align-items: start; }
+  .mapcol { display: flex; flex-direction: column; gap: 10px; }
+  /* Only the map well sets the column's width: the status sentence and help
+     prose change with app state, and letting them size a max-content column
+     re-centers the whole app (moving the map under a drag in progress). */
+  .statusbar, .helpblock, #flightstrip { width: 0; min-width: 100%; }
+  .mapwell { background: var(--well); border: 1px solid var(--line); border-radius: 3px;
+             padding: 10px; align-self: start; }
+  canvas#cv { display: block; image-rendering: pixelated; border: 1px solid var(--line);
+              cursor: crosshair; touch-action: none; }
+  /* sidebar sections */
+  #panel { display: flex; flex-direction: column; gap: 10px; }
+  .panel-sec { background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+               padding: 10px 12px; }
+  .panel-sec h2 { margin: 0 0 8px; font: 600 10px var(--mono); text-transform: uppercase;
+                  letter-spacing: .16em; color: var(--muted); }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+         margin: 6px 0; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+  .row.check { justify-content: flex-start; }
+  .caption { margin: 8px 0 0; font-size: 11px; color: var(--muted); line-height: 1.35; }
+  /* controls */
   button, select, input[type=number] {
-    background: #2a2a30; color: #ddd; border: 1px solid #555;
-    border-radius: 4px; padding: 3px 8px; font: inherit; font-size: 13px;
+    background: var(--well); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 3px; padding: 3px 8px; font: 12px var(--mono);
+    font-variant-numeric: tabular-nums;
   }
   button { cursor: pointer; }
-  button:hover:not(:disabled), select:hover { border-color: #888; }
+  button:hover:not(:disabled), select:hover { border-color: var(--muted); }
   button:disabled { opacity: 0.4; cursor: default; }
-  #replay { border-color: #3f7a4c; color: #7fd58f; }
-  #replay:hover:not(:disabled) { border-color: #5fae6e; }
-  .actions { display: flex; gap: 8px; margin-left: auto; }
-  input[type=range] { accent-color: #7fd58f; width: 140px; vertical-align: middle; }
-  .rangeval { display: inline-block; min-width: 44px; font-variant-numeric: tabular-nums; color: #bbb; }
-  /* drone-only controls hide in other modes */
+  :focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+  input[type=number] { width: 72px; }
+  select { width: 100%; }
+  input[type=range] { accent-color: var(--accent); flex: 1; min-width: 80px; vertical-align: middle; }
+  input[type=checkbox] { accent-color: var(--accent); margin: 0 6px 0 0; }
+  .rangeval { min-width: 48px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+  .btnrow { display: flex; gap: 8px; margin-top: 8px; }
+  /* destructive actions share the quiet danger treatment */
+  #reset, #clear, #clearSn { color: var(--danger); border-color: #4a3431; }
+  #reset:hover, #clear:hover, #clearSn:hover { border-color: var(--danger); }
+  #replay { border-color: #33493b; color: var(--go); }
+  #replay:hover:not(:disabled) { border-color: var(--go); }
+  /* visibility gating: whole sections (and legend rows) per mode / sensors */
   body:not([data-mode=drone]) .drone-only { display: none; }
-  /* sensor controls appear once the first sensor is placed */
   body:not(.has-sensors) .sensor-only { display: none; }
-  .stage { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
-  canvas#cv { image-rendering: pixelated; border: 1px solid #444; cursor: crosshair; touch-action: none; }
-  #side { display: flex; flex-direction: column; gap: 14px; font-size: 12px; max-width: 220px; }
-  .legend h3 { font-size: 12px; margin: 0 0 6px; color: #bbb; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
-  .ramp { display: flex; align-items: center; gap: 8px; }
-  #rampBar { width: 130px; height: 12px; border: 1px solid #555; border-radius: 2px; }
-  .rampLabels { display: flex; justify-content: space-between; width: 130px; color: #999; margin-top: 2px; }
-  .swatches { display: grid; grid-template-columns: 14px 1fr; gap: 5px 8px; align-items: center; margin-top: 4px; }
+  /* a hidden control must not read as an input: Target h leaves in drone mode
+     (the field computation forces it to 0 there, see render()) */
+  body[data-mode=drone] .tgt-only { display: none; }
+  /* status + help under the map */
+  .statusbar { background: var(--well); border: 1px solid var(--line); border-radius: 3px;
+               padding: 7px 10px; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
+  #stats { min-height: 1.2em; }
+  #gestures { font: 11px var(--mono); color: var(--muted); margin-bottom: 6px; }
+  #hint { font-size: 12px; color: var(--muted); line-height: 1.45; max-width: 622px; }
+  #hint summary { cursor: pointer; color: var(--ink); user-select: none;
+                  font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .16em; }
+  #hint[open] summary { margin-bottom: 6px; }
+  /* legend + inspector */
+  #rampBar { display: block; width: 100%; border: 1px solid var(--line); border-radius: 2px; }
+  .rampLabels { display: flex; justify-content: space-between; font: 11px var(--mono);
+                color: var(--muted); margin-top: 3px; }
+  .swatches { display: grid; grid-template-columns: 14px 1fr; gap: 5px 8px; align-items: center;
+              margin-top: 8px; font-size: 11px; }
   .sw { width: 14px; height: 14px; border-radius: 2px; border: 1px solid #0004; }
-  #readout { font-size: 12px; color: #9bd; min-height: 1.2em; font-variant-numeric: tabular-nums; }
-  #prof { border: 1px solid #444; border-radius: 2px; background: #141416; }
-  #gestures { font-size: 12px; color: #777; margin-top: 6px; }
-  #stats { font-size: 13px; color: #9c9; min-height: 1.2em; margin-top: 4px; }
-  #hint { font-size: 12px; color: #888; max-width: 620px; margin-top: 6px; line-height: 1.4; }
-  #hint summary { cursor: pointer; color: #9ab; user-select: none; }
+  #readout { font: 12px var(--mono); min-height: 2.5em; font-variant-numeric: tabular-nums; }
+  #profBox h3 { margin: 8px 0 6px; font: 600 10px var(--mono); text-transform: uppercase;
+                letter-spacing: .16em; color: var(--muted); }
+  #prof { display: block; border: 1px solid var(--line); border-radius: 2px; background: var(--well); }
 </style>
 </head>
 <body>
-<h1>Terrain Viewshed Sandbox
+<div class="app">
+<header>
+  <h1>Terrain Viewshed Sandbox</h1>
   <button id="reset" type="button" title="Restore all controls to their defaults and roll a fresh random terrain; removes sensors, observer and flight">reset to defaults</button>
-</h1>
-<div id="controls">
-  <div class="ctlrow">
-    <span class="rowtag">Terrain</span>
-    <select id="preset">
-      <option value="hills">rolling hills (procedural)</option>
-      <option value="ridged" selected>ridged mountains (procedural)</option>
-      <option value="flat">flat plane</option>
-      <option value="ridge">single ridge</option>
-    </select>
-    <label title="Seed for the procedural presets; flat plane and single ridge ignore it">Seed
-      <input id="seed" type="number" value="1" step="1"></label>
-    <button id="dice" type="button" title="Random seed">randomize</button>
-    <label title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> elevation color</label>
-  </div>
-  <div class="ctlrow">
-    <span class="rowtag">Analysis</span>
-    <select id="mode">
-      <option value="single">observer (click)</option>
-      <option value="drone" selected>drone A&rarr;B</option>
-      <option value="inverse">exposure (click target)</option>
-    </select>
-    <label>Observer/drone h (m) <input id="hObs" type="number" value="5" step="0.5"></label>
-    <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
-    <label>Max range (m) <input id="range" type="number" value="4000" step="500"></label>
-    <label class="drone-only" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need). While planning a route the impassable walls outline in purple on their own; hover or drag here to preview them in full.">Max alt
-      <input id="maxAlt" type="range" min="0" max="400" value="180" step="10">
-      <span class="rangeval" id="maxAltVal">180 m</span></label>
-    <label class="drone-only" title="Flight playback speed; applies live mid-flight without pausing or replanning">Speed
-      <input id="speed" type="range" min="0.1" max="1.5" step="0.05" value="0.75">
-      <span class="rangeval" id="speedVal">0.75&times;</span></label>
-    <label class="drone-only" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
-    <label class="drone-only" title="Resume automatically ~3 s after the last parameter change pauses a flight; the pause button always pauses for good"><input id="autoResume" type="checkbox" checked> auto-resume</label>
-    <label class="drone-only" title="Re-fly A&rarr;B automatically 5 s after landing &mdash; leave on to watch a shared scenario loop"><input id="autoReplay" type="checkbox" checked> auto-replay</label>
-    <label class="sensor-only" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch. Drag to preview what the sensors see.">Sensor h
-      <input id="sensorH" type="range" min="0" max="60" value="10" step="1">
-      <span class="rangeval" id="sensorHVal">10 m</span></label>
-    <span class="actions">
-      <button id="pause" type="button" class="drone-only" title="Pause/resume the current flight; parameter changes mid-flight pause automatically">pause</button>
-      <button id="replay" type="button" class="drone-only" title="Re-fly the current A&rarr;B path">replay flight</button>
-      <button id="clearSn" type="button" class="sensor-only">clear sensors</button>
-      <button id="clear" type="button">clear observer</button>
-    </span>
-  </div>
-</div>
-<div class="stage">
-  <canvas id="cv" width="600" height="600"></canvas>
-  <div id="side">
-    <div id="readout">Hover the map to read elevation.</div>
-    <div class="legend" id="profBox" style="display:none">
-      <h3>Sightline profile</h3>
-      <canvas id="prof" width="220" height="100"></canvas>
-    </div>
-    <div class="legend">
-      <h3>Elevation</h3>
-      <div class="ramp"><canvas id="rampBar" width="130" height="12"></canvas></div>
-      <div class="rampLabels"><span id="rampLo">0 m</span><span id="rampHi">0 m</span></div>
-    </div>
-    <div class="legend">
-      <h3>Viewshed</h3>
-      <div class="swatches">
-        <span class="sw" style="background:#46d75a"></span><span id="visLegend">visible from observer</span>
-        <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
-        <span class="sw sensor-only" style="background:#ff9628"></span><span class="sensor-only">seen by sensors</span>
-        <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
-        <span class="sw" style="background:#3c3c40"></span><span>beyond max range (dimmed)</span>
-      </div>
-    </div>
-  </div>
-</div>
-<div id="gestures"></div>
-<div id="stats">Click the map to place the observer.</div>
-<details id="hint">
+</header>
+<div class="layout">
+<div class="mapcol">
+  <div class="mapwell"><canvas id="cv" width="600" height="600"></canvas></div>
+  <div id="flightstrip" class="drone-only"><!-- Phase 3: transport + progress + countdowns --></div>
+  <div class="statusbar"><div id="stats">Click the map to place the observer.</div></div>
+  <div class="helpblock">
+    <div id="gestures"></div>
+    <details id="hint">
+
   <summary>help &amp; verification tips</summary>
   Verification: <b>flat plane</b> &rarr; visible disk out to the curvature/refraction horizon
   &radic;(2&middot;R<sub>eff</sub>&middot;h) &asymp; 5.45&nbsp;km at h&nbsp;=&nbsp;2&nbsp;m &mdash; raise max range to
@@ -158,7 +151,102 @@
   has a clear sight line to the observer/drone/target. With sensors present, planned flights prefer
   terrain the sensors can't see; exposed route legs draw red and the stats show the exposed share.
   Sensors persist until the terrain changes or "clear sensors".
-</details>
+    </details>
+  </div>
+</div>
+<aside id="panel">
+  <section class="panel-sec" id="secMode">
+    <h2>Mode</h2>
+    <select id="mode">
+      <option value="single">observer (click)</option>
+      <option value="drone" selected>drone A&rarr;B</option>
+      <option value="inverse">exposure (click target)</option>
+    </select>
+    <p class="caption" id="modeCaption"></p>
+    <div class="btnrow"><button id="clear" type="button">clear observer</button></div>
+  </section>
+  <section class="panel-sec" id="secTerrain">
+    <h2>Terrain</h2>
+    <select id="preset">
+      <option value="hills">rolling hills (procedural)</option>
+      <option value="ridged" selected>ridged mountains (procedural)</option>
+      <option value="flat">flat plane</option>
+      <option value="ridge">single ridge</option>
+    </select>
+    <label class="row" title="Seed for the procedural presets; flat plane and single ridge ignore it">
+      <span class="lab">Seed</span>
+      <span><input id="seed" type="number" value="1" step="1">
+        <button id="dice" type="button" title="Random seed">randomize</button></span>
+    </label>
+  </section>
+  <section class="panel-sec" id="secParams">
+    <h2>Parameters</h2>
+    <label class="row">
+      <span class="lab" id="hObsLabel">Drone height (AGL)</span>
+      <input id="hObs" type="number" value="5" step="0.5">
+    </label>
+    <label class="row tgt-only">
+      <span class="lab" id="hTgtLabel">Target height</span>
+      <input id="hTgt" type="number" value="0" step="0.5">
+    </label>
+    <label class="row">
+      <span class="lab">Max range (m)</span>
+      <input id="range" type="number" value="4000" step="500">
+    </label>
+  </section>
+  <section class="panel-sec drone-only" id="secFlight">
+    <h2>Flight</h2>
+    <label class="row" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need). While planning a route the impassable walls outline in purple on their own; hover or drag here to preview them in full.">
+      <span class="lab">Max alt</span>
+      <input id="maxAlt" type="range" min="0" max="400" value="180" step="10">
+      <span class="rangeval" id="maxAltVal">180 m</span>
+    </label>
+    <label class="row" title="Flight playback speed; applies live mid-flight without pausing or replanning">
+      <span class="lab">Speed</span>
+      <input id="speed" type="range" min="0.1" max="1.5" step="0.05" value="0.75">
+      <span class="rangeval" id="speedVal">0.75&times;</span>
+    </label>
+    <label class="row check" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> <span>coverage trail</span></label>
+    <label class="row check" title="Resume automatically ~3 s after the last parameter change pauses a flight; the pause button always pauses for good"><input id="autoResume" type="checkbox" checked> <span>auto-resume</span></label>
+    <label class="row check" title="Re-fly A&rarr;B automatically 5 s after landing &mdash; leave on to watch a shared scenario loop"><input id="autoReplay" type="checkbox" checked> <span>auto-replay</span></label>
+    <div class="btnrow">
+      <button id="pause" type="button" title="Pause/resume the current flight; parameter changes mid-flight pause automatically">pause</button>
+      <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
+    </div>
+  </section>
+  <section class="panel-sec sensor-only" id="secSensors">
+    <h2>Sensors</h2>
+    <label class="row" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch. Drag to preview what the sensors see.">
+      <span class="lab">Sensor h</span>
+      <input id="sensorH" type="range" min="0" max="60" value="10" step="1">
+      <span class="rangeval" id="sensorHVal">10 m</span>
+    </label>
+    <div class="btnrow"><button id="clearSn" type="button">clear sensors</button></div>
+  </section>
+  <section class="panel-sec" id="secView">
+    <h2>View</h2>
+    <label class="row check" title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> <span>elevation color</span></label>
+    <canvas id="rampBar" width="264" height="10"></canvas>
+    <div class="rampLabels"><span id="rampLo">0 m</span><span id="rampHi">0 m</span></div>
+    <div class="swatches">
+      <span class="sw" style="background:#46d75a"></span><span id="visLegend">visible from observer</span>
+      <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
+      <span class="sw sensor-only" style="background:#ff9628"></span><span class="sensor-only">seen by sensors</span>
+      <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
+      <span class="sw" style="background:#3c3c40"></span><span>beyond max range (dimmed)</span>
+    </div>
+  </section>
+  <section class="panel-sec" id="secInspect">
+    <h2>Inspector</h2>
+    <div id="readout">Hover the map to read elevation.</div>
+    <div id="profBox" style="display:none">
+      <h3>Sightline profile</h3>
+      <canvas id="prof" width="220" height="100"></canvas>
+    </div>
+  </section>
+</aside>
+</div>
+</div>
 
 <script id="core">
 // ---------- pure computation (no DOM; also exercised by the node test) ----------
@@ -568,11 +656,20 @@ function updateSensorUI() {
 
 const gesturesEl = document.getElementById('gestures');
 const maxAltValEl = document.getElementById('maxAltVal');
+const modeCaptionEl = document.getElementById('modeCaption');
+const hObsLabelEl = document.getElementById('hObsLabel');
+const hTgtLabelEl = document.getElementById('hTgtLabel');
 function updateGestures() {
   const click = { single: 'click: place observer', drone: 'click: set A, then B',
                   inverse: 'click: place target' }[modeEl.value];
   gesturesEl.textContent = `${click}  ·  drag: pilot live  ·  right-drag: place sensor (right-click mast: remove)`;
+  modeCaptionEl.textContent = click;
   clearEl.textContent = modeEl.value === 'drone' ? 'clear drone' : 'clear observer';
+  // The height inputs swap roles across modes; the labels say which role is
+  // live right now (Target h leaves entirely in drone mode, see .tgt-only).
+  hObsLabelEl.textContent = { single: 'Observer height', drone: 'Drone height (AGL)',
+                              inverse: 'Observer height (candidates)' }[modeEl.value];
+  hTgtLabelEl.textContent = modeEl.value === 'inverse' ? 'Target height (clicked)' : 'Target height';
 }
 
 // Ceiling preview: the map shows which terrain the drone can't clear
@@ -710,7 +807,10 @@ function render() {
     // symmetric in the endpoints), so "which cells can an hObs-eye observer
     // see the target from" is one viewshed cast FROM the target with the
     // heights exchanged.
-    const h1 = +hObsEl.value || 0, h2 = +hTgtEl.value || 0;
+    // Target h is hidden in drone mode, and a hidden control must not
+    // silently shape the field: the drone's viewshed reads ground-level
+    // targets (0 m) regardless of the input's stored value.
+    const h1 = +hObsEl.value || 0, h2 = drone ? 0 : (+hTgtEl.value || 0);
     vis = computeViewshed(z, obs.x, obs.y,
       inverse ? h2 : h1, inverse ? h1 : h2, +rangeEl.value || 0);
     const ms = performance.now() - t0;
@@ -897,7 +997,9 @@ function drawProfile() {
   // candidate observer, so the height roles swap here too (LOS reciprocity).
   const inv = modeEl.value === 'inverse';
   const hObs = +(inv ? hTgtEl : hObsEl).value || 0;
-  const hTgt = +(inv ? hObsEl : hTgtEl).value || 0;
+  // Same rule as the field in render(): drone mode reads 0 m targets.
+  const hTgt = inv ? (+hObsEl.value || 0)
+             : modeEl.value === 'drone' ? 0 : (+hTgtEl.value || 0);
   const D = distC * CELL;
   const zEye = elevAt(z, obs.x, obs.y) + hObs;
   const zTgt = elevAt(z, lastHover.x, lastHover.y) + hTgt - D * D / (2 * R_EFF);
@@ -1341,7 +1443,7 @@ clearSnEl.addEventListener('click', () => {
 // it, so clicks landing there are excluded to keep those interactions
 // non-destructive.
 document.addEventListener('click', e => {
-  if ((obs || ptA) && !e.target.closest('#cv, #controls, #side, #hint')) clearAll();
+  if ((obs || ptA) && !e.target.closest('#cv, #panel, #hint, #flightstrip')) clearAll();
 });
 replayEl.addEventListener('click', () => {
   // A found pending route launches/resumes as-is (skipping the countdown);
