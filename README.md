@@ -31,15 +31,20 @@ hash, so any moment can be bookmarked or shared.
   the drone plans an A* route around those walls, smoothed into straight legs
   by string-pulling. Hovering or adjusting the ceiling slider previews the
   walls in purple. No route → the flight refuses to launch and says why.
-- **Sensors & stealth**: right-click places sensor masts. Planned flights
-  softly avoid terrain the sensors can see (cost ×8); exposed route legs draw
-  red, and masts flash red live while they have a clear sight line to the
-  drone. Coverage-trail toggle accumulates everything seen during a flight.
+- **Sensors & stealth**: hold the right button to place a sensor mast — it
+  follows the cursor and commits on release; right-drag a mast to move it,
+  plain right-click to remove it. While placing, and while hovering or
+  adjusting the mast-height slider, an orange preview shows the union of
+  sensor viewsheds (what the masts see). Planned flights softly avoid terrain
+  the sensors can see (cost ×8); exposed route legs draw red, and masts flash
+  red live while they have a clear sight line to the drone. Coverage-trail
+  toggle accumulates everything seen during a flight.
 - **Sightline profile**: hover any cell (with an observer set) for a
   cross-section showing the curved-earth ground, the line of sight, and the
   exact sample that blocks it.
 - **Gestures**: click (place), drag (pilot the observer/drone live),
-  right-click (sensor). Listed under the map per mode.
+  right-drag (place/move a sensor), right-click a mast (remove it). Listed
+  under the map per mode.
 
 ## Physics
 
@@ -63,12 +68,12 @@ hash, so any moment can be bookmarked or shared.
 node test.js
 ```
 
-50 checks, no dependencies. The pure computation functions are extracted from
+43 checks, no dependencies. The pure computation functions are extracted from
 the `<script id="core">` block of `index.html` (kept deliberately DOM-free)
 and tested against analytic ground truth: the flat-plane horizon disk, ridge
 shadowing, tangent grazing at a rounded crest, LOS reciprocity, seeded-terrain
-determinism, pathfinding around synthetic obstacles, and stealth-routing
-detours vs. crossings.
+determinism, pathfinding around synthetic obstacles, stealth-routing
+detours vs. crossings, and the union of sensor viewsheds.
 
 The `flat plane` and `single ridge` presets exist for eyeball verification in
 the browser — the help fold in the app explains what to look for.
