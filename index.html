@@ -572,6 +572,7 @@ function updateGestures() {
   const click = { single: 'click: place observer', drone: 'click: set A, then B',
                   inverse: 'click: place target' }[modeEl.value];
   gesturesEl.textContent = `${click}  ·  drag: pilot live  ·  right-drag: place sensor (right-click mast: remove)`;
+  clearEl.textContent = modeEl.value === 'drone' ? 'clear drone' : 'clear observer';
 }
 
 // Ceiling preview: the map shows which terrain the drone can't clear
