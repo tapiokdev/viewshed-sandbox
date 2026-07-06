@@ -52,8 +52,19 @@
   #panel { display: flex; flex-direction: column; gap: 10px; }
   .panel-sec { background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
                padding: 10px 12px; }
-  .panel-sec h2 { margin: 0 0 8px; font: 600 10px var(--mono); text-transform: uppercase;
-                  letter-spacing: .16em; color: var(--muted); }
+  /* section headers are <summary>: inert labels on desktop, accordion
+     toggles on mobile (see the max-width block). */
+  .panel-sec > .sec-head { margin: 0 0 8px; font: 600 10px var(--mono); text-transform: uppercase;
+                  letter-spacing: .16em; color: var(--muted); list-style: none; cursor: default; }
+  .panel-sec > .sec-head::-webkit-details-marker { display: none; }
+  .panel-sec > .sec-head::marker { content: ""; }
+  .panel-sec[open] > .sec-head { margin-bottom: 8px; }
+  @media (min-width: 900px) { .panel-sec > .sec-head { pointer-events: none; } }
+  /* tool switcher (coarse pointers only); reuses .segmented for its look */
+  .coarse-only { display: none; }
+  @media (pointer: coarse) { .coarse-only { display: flex; } }
+  /* altimeter mobile-fallback bits: hidden on desktop (the altBar shows them) */
+  .alt-fallback-label, .alt-fallback-val { display: none; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
          margin: 6px 0; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
   .row.check { justify-content: flex-start; }
@@ -64,7 +75,7 @@
     border-radius: 3px; padding: 3px 8px; font: 12px var(--mono);
     font-variant-numeric: tabular-nums;
   }
-  button { cursor: pointer; }
+  button { cursor: pointer; touch-action: manipulation; }
   button:hover:not(:disabled), select:hover { border-color: var(--muted); }
   button:disabled { opacity: 0.4; cursor: default; }
   :focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
@@ -163,6 +174,33 @@
   #profBox h3 { margin: 8px 0 6px; font: 600 10px var(--mono); text-transform: uppercase;
                 letter-spacing: .16em; color: var(--muted); }
   #prof { display: block; border: 1px solid var(--line); border-radius: 2px; background: var(--well); }
+
+  /* ---- mobile / narrow: one responsive DOM (PLAN §5, §7) ---- */
+  @media (max-width: 899px) {
+    .app { width: auto; padding: 12px max(14px, env(safe-area-inset-right))
+                              max(12px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+    .layout { grid-template-columns: 1fr; }          /* sidebar stacks under the map */
+    #panel { max-width: 640px; }
+    canvas#cv { width: 100%; height: auto; aspect-ratio: 1 / 1; } /* internal 600x600 untouched */
+    .mapwell { flex-direction: column; }
+    /* altimeter demotes to a horizontal ceiling slider under the canvas
+       (drone mode only); the vertical bar hides. */
+    body:not([data-mode=drone]) .drone-only-mobile { display: none; }
+    .altimeter { display: flex; flex-direction: row; align-items: center; gap: 8px;
+                 width: 100%; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+    #altBar { display: none; }
+    .alt-fallback-label { display: inline; font: 12px var(--mono); color: var(--ink); }
+    .alt-fallback-val { display: inline; }
+    #maxAlt { position: static; flex: 1; margin: 0; clip: auto; overflow: visible;
+              width: auto !important; height: 16px !important; min-width: 80px !important; }
+    /* sidebar sections become tappable accordions */
+    .panel-sec > .sec-head { pointer-events: auto; cursor: pointer; color: var(--ink);
+                             position: relative; padding-left: 15px; }
+    .panel-sec > .sec-head::before { content: "\25B8"; position: absolute; left: 1px; color: var(--muted); }
+    .panel-sec[open] > .sec-head::before { content: "\25BE"; }
+    .toolswitch .seg { padding: 9px 4px; } /* larger touch targets */
+    #hint { max-width: none; }
+  }
 </style>
 </head>
 <body>
@@ -173,11 +211,17 @@
 </header>
 <div class="layout">
 <div class="mapcol">
+  <div class="toolswitch segmented coarse-only" role="group" aria-label="Touch tool">
+    <button type="button" class="seg" data-tool="navigate" aria-pressed="true">navigate</button>
+    <button type="button" class="seg" data-tool="sensors" aria-pressed="false">sensors</button>
+  </div>
   <div class="mapwell">
     <canvas id="cv" width="600" height="600"></canvas>
-    <div class="altimeter" id="altimeter" title="Altimeter. The ramp is the terrain's elevation range. In drone mode, drag to set the flight ceiling; the purple band is the heights the drone can't clear. Hover to preview those walls on the map.">
+    <div class="altimeter drone-only-mobile" id="altimeter" title="Altimeter. The ramp is the terrain's elevation range. In drone mode, drag to set the flight ceiling; the purple band is the heights the drone can't clear. Hover to preview those walls on the map.">
+      <span class="alt-fallback-label">Flight ceiling</span>
       <canvas id="altBar" width="70" height="600"></canvas>
       <input id="maxAlt" class="sr-only" type="range" min="0" max="400" value="180" step="10" aria-label="Flight ceiling, max altitude in metres">
+      <span class="rangeval alt-fallback-val" id="maxAltVal">180 m</span>
     </div>
   </div>
   <div id="flightstrip" class="flightstrip drone-only">
@@ -234,8 +278,8 @@
   </div>
 </div>
 <aside id="panel">
-  <section class="panel-sec" id="secMode">
-    <h2>Mode</h2>
+  <details class="panel-sec" id="secMode" open data-keep-open>
+    <summary class="sec-head">Mode</summary>
     <div class="segmented" role="group" aria-label="Analysis mode">
       <button type="button" class="seg" data-mode="single" aria-pressed="false">observer</button>
       <button type="button" class="seg" data-mode="drone" aria-pressed="true">drone A&rarr;B</button>
@@ -248,9 +292,9 @@
     </select>
     <p class="caption" id="modeCaption"></p>
     <div class="btnrow"><button id="clear" type="button">clear observer</button></div>
-  </section>
-  <section class="panel-sec" id="secTerrain">
-    <h2>Terrain</h2>
+  </details>
+  <details class="panel-sec" id="secTerrain" open>
+    <summary class="sec-head">Terrain</summary>
     <select id="preset">
       <option value="hills">rolling hills (procedural)</option>
       <option value="ridged" selected>ridged mountains (procedural)</option>
@@ -262,9 +306,9 @@
       <span><input id="seed" type="number" value="1" step="1">
         <button id="dice" type="button" title="Random seed">randomize</button></span>
     </label>
-  </section>
-  <section class="panel-sec" id="secParams">
-    <h2>Parameters</h2>
+  </details>
+  <details class="panel-sec" id="secParams" open data-keep-open>
+    <summary class="sec-head">Parameters</summary>
     <label class="row">
       <span class="lab" id="hObsLabel">Drone height (AGL)</span>
       <input id="hObs" type="range" min="0" max="150" value="5" step="0.5">
@@ -280,9 +324,9 @@
       <input id="range" type="range" min="500" max="12000" value="4000" step="250">
       <span class="rangeval" id="rangeVal">4 km</span>
     </label>
-  </section>
-  <section class="panel-sec drone-only" id="secFlight">
-    <h2>Flight</h2>
+  </details>
+  <details class="panel-sec drone-only" id="secFlight" open>
+    <summary class="sec-head">Flight</summary>
     <label class="row" title="Flight playback speed; applies live mid-flight without pausing or replanning">
       <span class="lab">Speed</span>
       <input id="speed" type="range" min="0.1" max="1.5" step="0.05" value="0.75">
@@ -293,9 +337,9 @@
     <label class="row check" title="Resume automatically ~3 s after the last parameter change pauses a flight; the pause button always pauses for good"><input id="autoResume" type="checkbox" checked> <span>auto-resume</span></label>
     <label class="row check" title="Re-fly A&rarr;B automatically 5 s after landing &mdash; leave on to watch a shared scenario loop"><input id="autoReplay" type="checkbox" checked> <span>auto-replay</span></label>
     <p class="caption">Set the flight ceiling on the altimeter beside the map &mdash; drag it, or hover to preview the walls. Pause, replay and progress sit under the map.</p>
-  </section>
-  <section class="panel-sec sensor-only" id="secSensors">
-    <h2>Sensors</h2>
+  </details>
+  <details class="panel-sec sensor-only" id="secSensors" open>
+    <summary class="sec-head">Sensors</summary>
     <label class="row" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch. Drag to preview what the sensors see.">
       <span class="lab peek">Sensor h</span>
       <input id="sensorH" type="range" min="0" max="60" value="10" step="1">
@@ -303,11 +347,11 @@
     </label>
     <div class="btnrow"><button id="clearSn" type="button">clear sensors</button></div>
     <p class="caption">Hover a mast or Sensor h to preview what the masts see.</p>
-  </section>
-  <section class="panel-sec" id="secView">
-    <h2>View</h2>
+  </details>
+  <details class="panel-sec" id="secView" open>
+    <summary class="sec-head">View</summary>
     <label class="row check" title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> <span>elevation color</span></label>
-    <p class="caption">Elevation ramp is the altimeter beside the map.</p>
+    <p class="caption">Elevation ramp is the altimeter beside the map (desktop).</p>
     <div class="swatches">
       <span class="sw" style="background:#46d75a"></span><span id="visLegend">visible from observer</span>
       <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
@@ -315,15 +359,15 @@
       <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
       <span class="sw" style="background:#3c3c40"></span><span>beyond max range (dimmed)</span>
     </div>
-  </section>
-  <section class="panel-sec" id="secInspect">
-    <h2>Inspector</h2>
+  </details>
+  <details class="panel-sec" id="secInspect" open>
+    <summary class="sec-head">Inspector</summary>
     <div id="readout">Hover the map to read elevation.</div>
     <div id="profBox" style="display:none">
       <h3>Sightline profile</h3>
       <canvas id="prof" width="220" height="100"></canvas>
     </div>
-  </section>
+  </details>
 </aside>
 </div>
 </div>
@@ -695,6 +739,7 @@ const autoReplayEl = document.getElementById('autoReplay');
 const hObsValEl = document.getElementById('hObsVal');
 const hTgtValEl = document.getElementById('hTgtVal');
 const rangeValEl = document.getElementById('rangeVal');
+const maxAltValEl = document.getElementById('maxAltVal'); // shown only in the mobile ceiling fallback
 
 // Range readout formatter: metres under 1 km, kilometres above.
 const fmtRange = v => v >= 1000
@@ -705,6 +750,7 @@ function updateReadouts() {
   hObsValEl.textContent = hObsEl.value + ' m';
   hTgtValEl.textContent = hTgtEl.value + ' m';
   rangeValEl.textContent = fmtRange(+rangeEl.value || 0);
+  maxAltValEl.textContent = maxAltEl.value + ' m';
   sensorHValEl.textContent = sensorHEl.value + ' m';
   speedValEl.textContent = (+speedEl.value) + '×';
 }
@@ -793,6 +839,7 @@ altimeterEl.addEventListener('mouseleave', () => { ceilHover = false; render(); 
 // #maxAlt - pins the preview and replans a live flight, all inherited from the
 // input event exactly as the old horizontal slider did.
 maxAltEl.addEventListener('input', () => {
+  maxAltValEl.textContent = maxAltEl.value + ' m'; // mobile fallback readout
   ceilSticky = true;
   replanFlight(); // mid-flight: pause + re-route under the new ceiling
   render();
@@ -1537,15 +1584,25 @@ function cellAtF(e) {
 // the scrub self-throttles to viewshed speed.
 let downPx = null, didDrag = false;
 
+// Coarse-pointer (touch) affordances: a tool switcher reroutes the primary
+// pointer into the sensor machinery, and hit radii grow. The primary pointer
+// type doesn't change at runtime, so matchMedia is read once.
+const coarse = matchMedia('(pointer: coarse)').matches;
+let touchTool = 'navigate';                 // 'navigate' | 'sensors' (coarse only)
+const snPickRadius = () => coarse ? 4 : 2;  // mast pickup / peek radius, cells
+// A sensor gesture is the right button (mouse), or the primary pointer while
+// the touch "sensors" tool is active - both drive the same snDrag machinery.
+const sensorGesture = e => e.button === 2 || (touchTool === 'sensors' && e.button === 0);
+
 cv.addEventListener('pointerdown', e => {
-  if (e.button === 2) {         // sensor gesture: mast follows the cursor,
+  if (sensorGesture(e)) {       // sensor gesture: mast follows the cursor,
     const c = cellAt(e);        // commits on release
     if (!c) return;
     ceilSticky = false;
     cv.setPointerCapture(e.pointerId);
     // Starting on an existing mast picks it up (splice now, re-add on
     // release); starting on empty ground begins a new mast.
-    const i = sensors.findIndex(s => Math.hypot(s.x - c.x, s.y - c.y) <= 2);
+    const i = sensors.findIndex(s => Math.hypot(s.x - c.x, s.y - c.y) <= snPickRadius());
     const original = i >= 0 ? sensors.splice(i, 1)[0] : null;
     snDrag = { cell: original ? { ...original } : c, moved: false,
                downPx: { x: e.clientX, y: e.clientY }, original };
@@ -1557,6 +1614,7 @@ cv.addEventListener('pointerdown', e => {
   if (e.button !== 0) return;
   ceilSticky = false;           // map interaction dismisses the pinned previews
   snSticky = false;
+  snMastHover = false;          // and the touch tap-to-peek
   downPx = { x: e.clientX, y: e.clientY };
   didDrag = false;
   cv.setPointerCapture(e.pointerId);
@@ -1585,11 +1643,10 @@ cv.addEventListener('pointermove', e => {
   render();
 });
 cv.addEventListener('pointerup', e => {
-  if (e.button === 2) {
-    if (!snDrag) return;
+  if (snDrag) {                 // commit whatever started the sensor gesture
     // A picked-up mast released without moving stays removed (plain
-    // right-click = remove); anything else commits the mast at its final
-    // cell and pins the coverage preview so the result stays visible.
+    // right-click / tap on a mast = remove); anything else commits the mast at
+    // its final cell and pins the coverage preview so the result stays visible.
     if (!(snDrag.original && !snDrag.moved)) {
       sensors.push(snDrag.cell);
       snSticky = true;
@@ -1606,6 +1663,13 @@ cv.addEventListener('pointerup', e => {
   if (wasDrag) return;          // scrub already parked obs at the last position
   const c = cellAt(e);
   if (!c) return;
+  // Coarse-pointer peek: with no hover on touch, a navigate-tool tap on an
+  // existing mast shows its coverage instead of placing; cleared by the next
+  // map interaction (the pointerdown above resets snMastHover).
+  if (coarse && touchTool === 'navigate' &&
+      sensors.some(s => Math.hypot(s.x - c.x, s.y - c.y) <= snPickRadius())) {
+    snMastHover = true; render(); return;
+  }
   if (modeEl.value === 'drone') {
     if (!ptA || ptB) {          // first click, or restart after a flight
       resetFlight();
@@ -1634,7 +1698,7 @@ cv.addEventListener('mousemove', e => {
   // the sensor-h slider (same radius as mast pickup). Suppressed during
   // drags: piloting keeps its live viewshed, and a mast drag previews anyway.
   const overMast = !downPx && !snDrag &&
-    sensors.some(s => Math.hypot(s.x - c.x, s.y - c.y) <= 2);
+    sensors.some(s => Math.hypot(s.x - c.x, s.y - c.y) <= snPickRadius());
   if (overMast !== snMastHover) { snMastHover = overMast; render(); }
   const zc = z[c.y * N + c.x];
   let txt = `(${c.x}, ${c.y})  elev ${zc.toFixed(1)} m`;
@@ -1648,6 +1712,29 @@ cv.addEventListener('mouseleave', () => {
   readoutEl.textContent = 'Hover the map to read elevation.';
   drawProfile();
 });
+// Touch tool switcher: 'sensors' reroutes the primary pointer into the mast
+// machinery (see sensorGesture); 'navigate' is the default place/pilot path.
+const toolSegs = document.querySelectorAll('.toolswitch .seg');
+for (const seg of toolSegs) seg.addEventListener('click', () => {
+  touchTool = seg.dataset.tool;
+  for (const s of toolSegs) s.setAttribute('aria-pressed', String(s.dataset.tool === touchTool));
+  if (touchTool !== 'sensors' && snDrag) { snDrag = null; updateSensorUI(); } // drop a stray placement
+  render();
+});
+// Responsive accordions: the sidebar <details> are forced open and inert on
+// desktop (a fixed panel), and collapse to tap toggles below 900 px with only
+// the data-keep-open sections (Mode, Parameters) open by default.
+const mqNarrow = matchMedia('(max-width: 899px)');
+function applyResponsive() {
+  const narrow = mqNarrow.matches;
+  document.querySelectorAll('details.panel-sec').forEach(d => {
+    d.querySelector('.sec-head').tabIndex = narrow ? 0 : -1;
+    if (!narrow) d.open = true;
+    else if (!('keepOpen' in d.dataset)) d.open = false; // valueless attr -> presence test
+  });
+}
+mqNarrow.addEventListener('change', applyResponsive);
+applyResponsive();
 function clearAll() {
   resetFlight();
   obs = null;
