@@ -997,7 +997,14 @@ function adoptPath(path, hasExposure) {
 // parameter change. Pauses first so the user can adjust calmly and resume
 // explicitly; repeated input events replan again from the same frozen spot.
 function replanFlight() {
-  if (!flying || !ptB || !flightPath) return;
+  if (!flying) {
+    // Parked at B awaiting auto-replay: a parameter change postpones the
+    // relaunch (fresh countdown), so the drone doesn't leap back to A while
+    // the user is still mid-adjustment.
+    if (autoReplayT) scheduleAutoReplay();
+    return;
+  }
+  if (!ptB || !flightPath) return;
   pauseFlight();
   const hObs = +hObsEl.value || 0;
   const cur = { x: Math.round(obs.x), y: Math.round(obs.y) };
