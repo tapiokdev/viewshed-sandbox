@@ -128,8 +128,12 @@
   In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
   <b>Exposure mode</b> inverts the question: click a target and the green overlay shows every cell an
   observer (at observer height) could see it from.
-  <b>Sensors</b>: right-click places/removes a sensor mast (yellow triangle; height adjustable via
-  the "Sensor h" input that appears with the first mast). A mast turns <b>red</b> while it currently
+  <b>Sensors</b>: hold the <b>right button</b> to place a sensor mast (yellow triangle) &mdash; it
+  follows the cursor with a live orange preview of what the masts see, and commits on release.
+  Right-drag an existing mast to move it; a plain right-click on a mast removes it. Mast height is
+  set with the "Sensor h" slider that appears with the first mast; hovering it peeks the coverage
+  preview, changing it pins the preview until the next map click.
+  A mast turns <b>red</b> while it currently
   has a clear sight line to the observer/drone/target. With sensors present, planned flights prefer
   terrain the sensors can't see; exposed route legs draw red and the stats show the exposed share.
   Sensors persist until the terrain changes or "clear sensors".
@@ -512,11 +516,16 @@ let lastTick = 0;                   // wall-clock time of the previous frame
 let flightPath = null;              // planned waypoints [{x,y,exp},...] from findPath
 let cumLen = [0], totalLen = 0;     // cumulative segment lengths (cells)
 let ceilNote = '';                  // stats note when the ceiling was auto-raised
-let sensors = [];                   // [{x,y}] sensor masts placed by right-click
+let sensors = [];                   // [{x,y}] sensor masts placed by right-drag
 let expFrac = null;                 // exposed fraction of the planned route
-// Sensor controls only show once a sensor exists; keep the flag in sync.
+// Right-button placement drag in progress: the provisional mast in .cell
+// follows the cursor and commits into sensors on release. .original holds a
+// picked-up existing mast (release without moving = removal, i.e. the plain
+// right-click gesture; release elsewhere = move).
+let snDrag = null;                  // { cell, moved, downPx, original }
+// Sensor controls only show once a sensor exists (a provisional one counts).
 function updateSensorUI() {
-  document.body.classList.toggle('has-sensors', sensors.length > 0);
+  document.body.classList.toggle('has-sensors', sensors.length > 0 || !!snDrag);
 }
 
 const gesturesEl = document.getElementById('gestures');
@@ -524,7 +533,7 @@ const maxAltValEl = document.getElementById('maxAltVal');
 function updateGestures() {
   const click = { single: 'click: place observer', drone: 'click: set A, then B',
                   inverse: 'click: place target' }[modeEl.value];
-  gesturesEl.textContent = `${click}  ·  drag: pilot live  ·  right-click: place/remove sensor`;
+  gesturesEl.textContent = `${click}  ·  drag: pilot live  ·  right-drag: place sensor (right-click mast: remove)`;
 }
 
 // Ceiling preview: the map shows which terrain the drone can't clear
@@ -624,16 +633,18 @@ function render() {
   if (drone && ptA && !ptB) msg = 'A set - click to set B and launch.';
   // Sensor preview (sensor-h control hovered, pinned after a change, or a
   // placement drag in progress): the overlay answers "what do the masts see?"
-  // instead of the observer/drone viewshed.
-  const showSn = (snHover || snSticky) && sensors.length > 0;
+  // instead of the observer/drone viewshed. A provisional mast being dragged
+  // counts as a sensor throughout.
+  const snAll = snDrag ? [...sensors, snDrag.cell] : sensors;
+  const showSn = (snHover || snSticky || !!snDrag) && snAll.length > 0;
   let snVis = null;
   if (showSn) {
     const t0 = performance.now();
-    snVis = exposureField(z, sensors, +sensorHEl.value || 0, markerH, +rangeEl.value || 0);
+    snVis = exposureField(z, snAll, +sensorHEl.value || 0, markerH, +rangeEl.value || 0);
     const ms = performance.now() - t0;
     let nExp = 0;
     for (let i = 0; i < N * N; i++) if (snVis[i]) nExp++;
-    msg = `Sensor preview: ${sensors.length} mast${sensors.length > 1 ? 's' : ''} at ` +
+    msg = `Sensor preview: ${snAll.length} mast${snAll.length > 1 ? 's' : ''} at ` +
           `${+sensorHEl.value || 0} m cover ${(100 * nExp / (N * N)).toFixed(1)}% of the map - ${ms.toFixed(0)} ms`;
   } else if (obs) {
     const t0 = performance.now();
@@ -739,7 +750,7 @@ function render() {
   // clear sight line to the marker (drone/observer at hObs, target at hTgt).
   // One ray per sensor per frame - negligible next to the viewshed.
   const snH = +sensorHEl.value || 0;
-  for (const sn of sensors) {
+  for (const sn of snAll) {
     const sees = obs && losVisible(z, sn.x, sn.y, snH, obs.x, obs.y, markerH, +rangeEl.value || 0);
     const [x, y] = px(sn);
     ctx.beginPath();
@@ -953,25 +964,42 @@ function cellAtF(e) {
 let downPx = null, didDrag = false;
 
 cv.addEventListener('pointerdown', e => {
-  if (e.button !== 0) return; // right-click is the sensor gesture
-  ceilSticky = false;         // map interaction dismisses the pinned previews
+  if (e.button === 2) {         // sensor gesture: mast follows the cursor,
+    const c = cellAt(e);        // commits on release
+    if (!c) return;
+    ceilSticky = false;
+    cv.setPointerCapture(e.pointerId);
+    // Starting on an existing mast picks it up (splice now, re-add on
+    // release); starting on empty ground begins a new mast.
+    const i = sensors.findIndex(s => Math.hypot(s.x - c.x, s.y - c.y) <= 2);
+    const original = i >= 0 ? sensors.splice(i, 1)[0] : null;
+    snDrag = { cell: original ? { ...original } : c, moved: false,
+               downPx: { x: e.clientX, y: e.clientY }, original };
+    updateSensorUI();
+    render();                   // sensor coverage preview goes live
+    return;
+  }
+  if (e.button !== 0) return;
+  ceilSticky = false;           // map interaction dismisses the pinned previews
   snSticky = false;
   downPx = { x: e.clientX, y: e.clientY };
   didDrag = false;
   cv.setPointerCapture(e.pointerId);
 });
-// Right-click places a sensor mast; right-click near an existing one removes it.
-cv.addEventListener('contextmenu', e => {
-  e.preventDefault();
-  ceilSticky = false;
-  const c = cellAt(e);
-  if (!c) return;
-  const i = sensors.findIndex(s => Math.hypot(s.x - c.x, s.y - c.y) <= 2);
-  if (i >= 0) sensors.splice(i, 1); else sensors.push(c);
-  updateSensorUI();
-  render();
-});
+// The right-button gesture lives in pointerdown/move/up; only the menu needs
+// suppressing here (on macOS contextmenu fires already on button-down).
+cv.addEventListener('contextmenu', e => e.preventDefault());
 cv.addEventListener('pointermove', e => {
+  if (snDrag) {                 // mast follows the cursor once past the
+    if (!snDrag.moved) {        // click/drag threshold
+      if (Math.hypot(e.clientX - snDrag.downPx.x, e.clientY - snDrag.downPx.y) < 5) return;
+      snDrag.moved = true;
+    }
+    const f = cellAtF(e);       // clamped: dragging off-canvas slides along the edge
+    snDrag.cell = { x: Math.round(f.x), y: Math.round(f.y) };
+    render();
+    return;
+  }
   if (!downPx) return;
   if (!didDrag) {
     if (Math.hypot(e.clientX - downPx.x, e.clientY - downPx.y) < 5) return;
@@ -982,6 +1010,20 @@ cv.addEventListener('pointermove', e => {
   render();
 });
 cv.addEventListener('pointerup', e => {
+  if (e.button === 2) {
+    if (!snDrag) return;
+    // A picked-up mast released without moving stays removed (plain
+    // right-click = remove); anything else commits the mast at its final
+    // cell and pins the coverage preview so the result stays visible.
+    if (!(snDrag.original && !snDrag.moved)) {
+      sensors.push(snDrag.cell);
+      snSticky = true;
+    }
+    snDrag = null;
+    updateSensorUI();
+    render();
+    return;
+  }
   if (e.button !== 0) return;
   const wasDrag = didDrag;
   downPx = null; didDrag = false;
@@ -1000,6 +1042,13 @@ cv.addEventListener('pointerup', e => {
   } else {
     obs = c; render();
   }
+});
+cv.addEventListener('pointercancel', () => {
+  if (!snDrag) return;          // aborted placement: put a picked-up mast back
+  if (snDrag.original) sensors.push(snDrag.original);
+  snDrag = null;
+  updateSensorUI();
+  render();
 });
 cv.addEventListener('mousemove', e => {
   const c = cellAt(e);
