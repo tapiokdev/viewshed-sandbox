@@ -24,6 +24,10 @@ hash, so any moment can be bookmarked or shared.
   - *observer* — click a cell, see what it sees.
   - *drone A→B* — the observer flies a planned route at a set height above
     ground; viewshed updates each frame (~5–15 fps, synchronous by design).
+    Flights can be paused/resumed, and a speed slider (0.25×–4×) gives
+    slow-motion or fast-forward live. Changing a flight-relevant parameter
+    (height, ceiling, range, sensors) mid-flight pauses the drone and replans
+    the remaining route from its current position.
   - *exposure* — inverse viewshed: click a target, see everywhere it can be
     seen **from** (uses LOS reciprocity; zero extra physics).
   - Switching modes keeps the marked point, reinterpreting its role.

@@ -77,11 +77,15 @@
     <label class="drone-only" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need). Drag to preview the impassable walls on the map.">Max alt
       <input id="maxAlt" type="range" min="0" max="400" value="180" step="10">
       <span class="rangeval" id="maxAltVal">180 m</span></label>
+    <label class="drone-only" title="Flight playback speed; applies live mid-flight without pausing or replanning">Speed
+      <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1">
+      <span class="rangeval" id="speedVal">1&times;</span></label>
     <label class="drone-only" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
     <label class="sensor-only" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch. Drag to preview what the sensors see.">Sensor h
       <input id="sensorH" type="range" min="0" max="60" value="10" step="1">
       <span class="rangeval" id="sensorHVal">10 m</span></label>
     <span class="actions">
+      <button id="pause" type="button" class="drone-only" title="Pause/resume the current flight; parameter changes mid-flight pause automatically">pause</button>
       <button id="replay" type="button" class="drone-only" title="Re-fly the current A&rarr;B path">replay flight</button>
       <button id="clearSn" type="button" class="sensor-only">clear sensors</button>
       <button id="clear" type="button">clear observer</button>
@@ -124,7 +128,10 @@
   <b>single ridge</b> &rarr; click west of the ridge for a clean shadow behind it.
   <b>Drone mode</b>: click A then B; the drone flies straight at the set height above local
   ground, and the overlay follows it; the route plans around terrain the drone can't clear
-  under <b>max alt</b>. Height/range edits apply live mid-flight.
+  under <b>max alt</b>. Changing height, max alt, range or sensors mid-flight <b>pauses</b> the
+  drone and replans the rest of the route from where it is &mdash; press <b>resume</b> to
+  continue. The <b>pause</b> button also works on its own, and the <b>speed</b> slider
+  (&frac14;&times;&ndash;4&times;) changes playback live without pausing.
   In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
   <b>Exposure mode</b> inverts the question: click a target and the green overlay shows every cell an
   observer (at observer height) could see it from.
@@ -498,6 +505,9 @@ const sensorHEl = document.getElementById('sensorH');
 const clearSnEl = document.getElementById('clearSn');
 const coverEl = document.getElementById('cover');
 const replayEl = document.getElementById('replay');
+const pauseEl = document.getElementById('pause');
+const speedEl = document.getElementById('speed');
+const speedValEl = document.getElementById('speedVal');
 
 const off = document.createElement('canvas');
 off.width = N; off.height = N;
@@ -512,6 +522,8 @@ let obs = null;           // {x, y} observer position; fractional mid-flight
 let ptA = null, ptB = null;         // flight endpoints (integer cells)
 let tFlight = 0;                    // progress along the path, 0..1
 let flying = false, rafId = 0, timerId = 0;
+let paused = false;                 // flight exists but its animation is halted
+let replanned = false;              // route was replanned mid-flight (stats wording)
 let lastTick = 0;                   // wall-clock time of the previous frame
 let flightPath = null;              // planned waypoints [{x,y,exp},...] from findPath
 let cumLen = [0], totalLen = 0;     // cumulative segment lengths (cells)
@@ -547,6 +559,7 @@ maxAltLabel.addEventListener('mouseleave', () => { ceilHover = false; render(); 
 maxAltEl.addEventListener('input', () => {
   maxAltValEl.textContent = maxAltEl.value + ' m';
   ceilSticky = true;
+  replanFlight(); // mid-flight: pause + re-route under the new ceiling
   render();
 });
 // Sensor visibility preview: same peek/pin pattern for the sensor-h control,
@@ -667,7 +680,8 @@ function render() {
     }
     const oz = elevAt(z, obs.x, obs.y);
     const fmt = v => Number.isInteger(v) ? v : v.toFixed(1);
-    const who = drone ? (ptB ? `Drone ${Math.round(tFlight * 100)}% A→B`
+    const who = drone ? (ptB ? `Drone${paused ? ' (paused)' : ''} ${Math.round(tFlight * 100)}% ` +
+                               (replanned ? '→B (replanned)' : 'A→B')
                              : ptA ? 'Drone parked at A' : 'Drone (manual)')
                       : inverse ? 'Target' : 'Observer';
     msg = `${who} at (${fmt(obs.x)}, ${fmt(obs.y)}), ground ${oz.toFixed(0)} m + ${inverse ? (+hTgtEl.value || 0) : (+hObsEl.value || 0)} m. ` +
@@ -772,6 +786,8 @@ function render() {
   }
   statsEl.textContent = msg;
   replayEl.disabled = !(ptA && ptB); // affordance: dimmed until re-flyable
+  pauseEl.disabled = !flying;        // only a live flight can pause/resume
+  pauseEl.textContent = paused ? 'resume' : 'pause';
   drawProfile(); // keeps the cross-section live during flights and scrubs
   queueHash();   // scenario state -> URL (debounced)
 }
@@ -865,15 +881,35 @@ function cellAt(e) {
 }
 
 // ---- drone flight machinery ----
-function cancelFlight() {
-  flying = false;
+function stopTicking() {
   if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
   if (timerId) { clearTimeout(timerId); timerId = 0; }
+}
+function cancelFlight() {
+  flying = false;
+  paused = false;
+  stopTicking();
+}
+// Pause halts the animation but keeps the flight (flying stays true), so the
+// route, progress and coverage all survive until resume.
+function pauseFlight() {
+  if (!flying || paused) return;
+  paused = true;
+  stopTicking();
+}
+function resumeFlight() {
+  if (!flying || !paused) return;
+  paused = false;
+  ceilSticky = false; // resuming returns focus to the flight, like launching
+  snSticky = false;
+  lastTick = performance.now(); // don't count the paused span as elapsed
+  tick();
 }
 function resetFlight() {
   cancelFlight();
   ptA = null; ptB = null; tFlight = 0;
   flightPath = null; cumLen = [0]; totalLen = 0; ceilNote = ''; expFrac = null;
+  replanned = false;
   seen.fill(0);
 }
 function startFlight() {
@@ -896,6 +932,17 @@ function startFlight() {
     statsEl.textContent = 'No route under max altitude - raise it (or pick another B). Drone parked at A.';
     return;
   }
+  adoptPath(path, !!exposure);
+  ceilNote = effMaxAlt > userAlt ? ` - ceiling auto-raised to ${Math.round(effMaxAlt)} m for A/B` : '';
+  tFlight = 0; seen.fill(0);
+  replanned = false;
+  flying = true;
+  lastTick = performance.now();
+  tick();
+}
+// Adopt a planned path: cumulative segment lengths for pathPos() and the
+// exposed fraction for the stats (null when no sensors were considered).
+function adoptPath(path, hasExposure) {
   flightPath = path;
   cumLen = [0];
   let expLen = 0;
@@ -905,12 +952,34 @@ function startFlight() {
     if (path[i].exp) expLen += seg;
   }
   totalLen = cumLen[cumLen.length - 1];
-  expFrac = exposure && totalLen > 0 ? expLen / totalLen : null;
-  ceilNote = effMaxAlt > userAlt ? ` - ceiling auto-raised to ${Math.round(effMaxAlt)} m for A/B` : '';
-  tFlight = 0; seen.fill(0);
-  flying = true;
-  lastTick = performance.now();
-  tick();
+  expFrac = hasExposure && totalLen > 0 ? expLen / totalLen : null;
+}
+// Re-route the remaining flight (current position -> B) after a mid-flight
+// parameter change. Pauses first so the user can adjust calmly and resume
+// explicitly; repeated input events replan again from the same frozen spot.
+function replanFlight() {
+  if (!flying || !ptB || !flightPath) return;
+  pauseFlight();
+  const hObs = +hObsEl.value || 0;
+  const cur = { x: Math.round(obs.x), y: Math.round(obs.y) };
+  const userAlt = +maxAltEl.value || 0;
+  // Same auto-raise rule as launch, protecting the current position instead
+  // of A: dragging the ceiling below the drone's present altitude raises the
+  // effective ceiling rather than stranding it in an illegal cell.
+  const effMaxAlt = Math.max(userAlt,
+    elevAt(z, cur.x, cur.y) + hObs, elevAt(z, ptB.x, ptB.y) + hObs);
+  const exposure = exposureField(z, sensors, +sensorHEl.value || 0, hObs, +rangeEl.value || 0);
+  const path = findPath(z, cur.x, cur.y, ptB.x, ptB.y, hObs, effMaxAlt, exposure);
+  if (!path) { // walls fully separate the drone from B: keep the old route
+    ceilNote = ' - no route to B under this ceiling (old route kept)';
+    return;
+  }
+  path[0] = { x: obs.x, y: obs.y, exp: 0 }; // exact position, no snap to cell
+  adoptPath(path, !!exposure);
+  tFlight = 0; // progress restarts on the remaining route; coverage persists
+  replanned = true;
+  ceilNote = effMaxAlt > userAlt
+    ? ` - ceiling auto-raised to ${Math.round(effMaxAlt)} m for current position` : '';
 }
 // Position along the planned polyline at a given distance from A (in cells).
 function pathPos(dist) {
@@ -932,7 +1001,9 @@ function tick() {
   const dt = Math.min(0.3, (now - lastTick) / 1000);
   lastTick = now;
   const durS = Math.min(MAX_FLIGHT_S, Math.max(MIN_FLIGHT_S, totalLen / DRONE_SPEED));
-  tFlight = Math.min(1, tFlight + dt / durS);
+  // Playback speed multiplies progress, not position, so changing it
+  // mid-flight never jumps the drone; read each frame so it applies live.
+  tFlight = Math.min(1, tFlight + dt * (+speedEl.value || 1) / durS);
   obs = pathPos(tFlight * totalLen);
   render(); // one synchronous viewshed per frame - the dominant frame cost
   if (flying && tFlight < 1) {
@@ -975,6 +1046,7 @@ cv.addEventListener('pointerdown', e => {
     const original = i >= 0 ? sensors.splice(i, 1)[0] : null;
     snDrag = { cell: original ? { ...original } : c, moved: false,
                downPx: { x: e.clientX, y: e.clientY }, original };
+    pauseFlight();              // freeze a running flight while placing
     updateSensorUI();
     render();                   // sensor coverage preview goes live
     return;
@@ -1020,6 +1092,7 @@ cv.addEventListener('pointerup', e => {
       snSticky = true;
     }
     snDrag = null;
+    replanFlight(); // the sensor field changed under a paused flight
     updateSensorUI();
     render();
     return;
@@ -1074,6 +1147,7 @@ clearEl.addEventListener('click', clearAll); // observer/flight only
 clearSnEl.addEventListener('click', () => {
   sensors = [];
   snSticky = false;
+  replanFlight(); // stealth constraint gone: the direct remainder may open up
   updateSensorUI();
   render();
 });
@@ -1085,6 +1159,9 @@ document.addEventListener('click', e => {
   if ((obs || ptA) && !e.target.closest('#cv, #controls, #side, #hint')) clearAll();
 });
 replayEl.addEventListener('click', () => { if (ptA && ptB) startFlight(); });
+pauseEl.addEventListener('click', () => {
+  if (paused) resumeFlight(); else { pauseFlight(); render(); }
+});
 // Full factory reset: every control back to its default, scenario wiped.
 // Reuses regen() (flight + sensors + terrain + render), which also rewrites
 // the URL hash to the default state.
@@ -1094,6 +1171,7 @@ document.getElementById('reset').addEventListener('click', () => {
   hObsEl.value = 5; hTgtEl.value = 0; rangeEl.value = 4000;
   maxAltEl.value = 180; maxAltValEl.textContent = '180 m';
   sensorHEl.value = 10; sensorHValEl.textContent = '10 m';
+  speedEl.value = 1; speedValEl.textContent = '1×';
   tintEl.checked = true; coverEl.checked = false;
   obs = null; ceilHover = false; ceilSticky = false; snHover = false; snSticky = false;
   document.body.dataset.mode = 'drone';
@@ -1137,12 +1215,25 @@ diceEl.addEventListener('click', () => {
   regen();
 });
 tintEl.addEventListener('change', render);
-for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
+// Mid-flight, parameter edits pause the drone and replan the remaining route
+// (replanFlight is a no-op without a live flight). Drone height affects the
+// ceiling and exposure; range and sensor height only matter to the route
+// through sensor exposure; target height never affects routing.
+hTgtEl.addEventListener('input', render);
+hObsEl.addEventListener('input', () => { replanFlight(); render(); });
+rangeEl.addEventListener('input', () => { if (sensors.length) replanFlight(); render(); });
 const sensorHValEl = document.getElementById('sensorHVal');
 sensorHEl.addEventListener('input', () => {
   sensorHValEl.textContent = sensorHEl.value + ' m';
   snSticky = true;
+  if (sensors.length) replanFlight();
   render();
+});
+speedEl.addEventListener('input', () => {
+  speedValEl.textContent = +speedEl.value + '×';
+  // Playback control only: no pause, no replan. A running flight renders on
+  // its next tick anyway; render here for the parked case (and the hash sync).
+  if (!flying || paused) render(); else queueHash();
 });
 
 // ---- shareable scenario URLs ----
@@ -1154,7 +1245,7 @@ function queueHash() { clearTimeout(hashTimer); hashTimer = setTimeout(syncHash,
 function syncHash() {
   const p = ['p=' + presetEl.value, 's=' + seedEl.value, 'm=' + modeEl.value,
              'h=' + hObsEl.value, 't=' + hTgtEl.value, 'r=' + rangeEl.value,
-             'a=' + maxAltEl.value, 'sh=' + sensorHEl.value,
+             'a=' + maxAltEl.value, 'sh=' + sensorHEl.value, 'v=' + speedEl.value,
              'c=' + (tintEl.checked ? 1 : 0) + (coverEl.checked ? 1 : 0)];
   if (sensors.length) p.push('sn=' + sensors.map(s => s.x + ',' + s.y).join(';'));
   if (ptA) p.push('A=' + ptA.x + ',' + ptA.y);
@@ -1185,6 +1276,7 @@ function loadHash() {
   if (q.r !== undefined) rangeEl.value = q.r;
   if (q.a !== undefined) maxAltEl.value = q.a;
   if (q.sh !== undefined) sensorHEl.value = q.sh;
+  if (q.v !== undefined) speedEl.value = q.v;
   if (q.c) { tintEl.checked = q.c[0] !== '0'; coverEl.checked = q.c[1] === '1'; }
   if (q.sn) sensors = q.sn.split(';').map(s => pt(s, true)).filter(Boolean);
   return {
@@ -1199,6 +1291,7 @@ updateSensorUI();
 updateGestures();
 maxAltValEl.textContent = maxAltEl.value + ' m';
 sensorHValEl.textContent = sensorHEl.value + ' m';
+speedValEl.textContent = +speedEl.value + '×';
 document.body.dataset.mode = modeEl.value;
 document.getElementById('visLegend').textContent =
   modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
