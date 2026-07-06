@@ -78,8 +78,8 @@
       <input id="maxAlt" type="range" min="0" max="400" value="180" step="10">
       <span class="rangeval" id="maxAltVal">180 m</span></label>
     <label class="drone-only" title="Flight playback speed; applies live mid-flight without pausing or replanning">Speed
-      <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1">
-      <span class="rangeval" id="speedVal">1&times;</span></label>
+      <input id="speed" type="range" min="0.1" max="1.5" step="0.05" value="0.75">
+      <span class="rangeval" id="speedVal">0.75&times;</span></label>
     <label class="drone-only" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
     <label class="drone-only" title="Resume automatically ~3 s after the last parameter change pauses a flight; the pause button always pauses for good"><input id="autoResume" type="checkbox" checked> auto-resume</label>
     <label class="drone-only" title="Re-fly A&rarr;B automatically 5 s after landing &mdash; leave on to watch a shared scenario loop"><input id="autoReplay" type="checkbox" checked> auto-replay</label>
@@ -135,7 +135,7 @@
   ~3&nbsp;s after the last change (<b>auto-resume</b>), or press <b>resume</b>. Landed
   flights re-fly after 5&nbsp;s (<b>auto-replay</b>), so a shared scenario loops on its
   own; untick the toggles for manual control. A manual <b>pause</b> always sticks, and
-  the <b>speed</b> slider (&frac14;&times;&ndash;4&times;) changes playback live without
+  the <b>speed</b> slider (0.1&times;&ndash;1.5&times;) changes playback live without
   pausing.
   In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
   <b>Exposure mode</b> inverts the question: click a target and the green overlay shows every cell an
@@ -1051,7 +1051,7 @@ function tick() {
   const durS = Math.min(MAX_FLIGHT_S, Math.max(MIN_FLIGHT_S, totalLen / DRONE_SPEED));
   // Playback speed multiplies progress, not position, so changing it
   // mid-flight never jumps the drone; read each frame so it applies live.
-  tFlight = Math.min(1, tFlight + dt * (+speedEl.value || 1) / durS);
+  tFlight = Math.min(1, tFlight + dt * (+speedEl.value || 0.75) / durS);
   obs = pathPos(tFlight * totalLen);
   if (tFlight >= 1) { // landed: settle state before the final render so the
     flying = false;   // pause button disables on the landing frame itself
@@ -1222,7 +1222,7 @@ document.getElementById('reset').addEventListener('click', () => {
   hObsEl.value = 5; hTgtEl.value = 0; rangeEl.value = 4000;
   maxAltEl.value = 180; maxAltValEl.textContent = '180 m';
   sensorHEl.value = 10; sensorHValEl.textContent = '10 m';
-  speedEl.value = 1; speedValEl.textContent = '1×';
+  speedEl.value = 0.75; speedValEl.textContent = '0.75×';
   tintEl.checked = true; coverEl.checked = false;
   autoResumeEl.checked = true; autoReplayEl.checked = true;
   obs = null; ceilHover = false; ceilSticky = false; snHover = false; snSticky = false;
