@@ -28,7 +28,10 @@ hash, so any moment can be bookmarked or shared.
     Flights can be paused/resumed, and a speed slider (0.25×–4×) gives
     slow-motion or fast-forward live. Changing a flight-relevant parameter
     (height, ceiling, range, sensors) mid-flight pauses the drone and replans
-    the remaining route from its current position.
+    the remaining route from its current position; by default the flight
+    auto-resumes ~3 s after the last change and auto-replays 5 s after
+    landing (each a toggle), so a shared scenario URL loops as a
+    self-running demo. A manual pause always sticks.
   - *exposure* — inverse viewshed: click a target, see everywhere it can be
     seen **from** (uses LOS reciprocity; zero extra physics).
   - Switching modes keeps the marked point, reinterpreting its role.

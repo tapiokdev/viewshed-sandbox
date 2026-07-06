@@ -81,6 +81,8 @@
       <input id="speed" type="range" min="0.25" max="4" step="0.25" value="1">
       <span class="rangeval" id="speedVal">1&times;</span></label>
     <label class="drone-only" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
+    <label class="drone-only" title="Resume automatically ~3 s after the last parameter change pauses a flight; the pause button always pauses for good"><input id="autoResume" type="checkbox" checked> auto-resume</label>
+    <label class="drone-only" title="Re-fly A&rarr;B automatically 5 s after landing &mdash; leave on to watch a shared scenario loop"><input id="autoReplay" type="checkbox" checked> auto-replay</label>
     <label class="sensor-only" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch. Drag to preview what the sensors see.">Sensor h
       <input id="sensorH" type="range" min="0" max="60" value="10" step="1">
       <span class="rangeval" id="sensorHVal">10 m</span></label>
@@ -129,9 +131,12 @@
   <b>Drone mode</b>: click A then B; the drone flies straight at the set height above local
   ground, and the overlay follows it; the route plans around terrain the drone can't clear
   under <b>max alt</b>. Changing height, max alt, range or sensors mid-flight <b>pauses</b> the
-  drone and replans the rest of the route from where it is &mdash; press <b>resume</b> to
-  continue. The <b>pause</b> button also works on its own, and the <b>speed</b> slider
-  (&frac14;&times;&ndash;4&times;) changes playback live without pausing.
+  drone and replans the rest of the route from where it is &mdash; it resumes by itself
+  ~3&nbsp;s after the last change (<b>auto-resume</b>), or press <b>resume</b>. Landed
+  flights re-fly after 5&nbsp;s (<b>auto-replay</b>), so a shared scenario loops on its
+  own; untick the toggles for manual control. A manual <b>pause</b> always sticks, and
+  the <b>speed</b> slider (&frac14;&times;&ndash;4&times;) changes playback live without
+  pausing.
   In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
   <b>Exposure mode</b> inverts the question: click a target and the green overlay shows every cell an
   observer (at observer height) could see it from.
@@ -508,6 +513,8 @@ const replayEl = document.getElementById('replay');
 const pauseEl = document.getElementById('pause');
 const speedEl = document.getElementById('speed');
 const speedValEl = document.getElementById('speedVal');
+const autoResumeEl = document.getElementById('autoResume');
+const autoReplayEl = document.getElementById('autoReplay');
 
 const off = document.createElement('canvas');
 off.width = N; off.height = N;
@@ -575,6 +582,9 @@ const seen = new Uint8Array(N * N); // cells visible at least once this flight
 const DRONE_SPEED = 15;             // ground speed, cells/s (450 m/s map speed)
 const MIN_FLIGHT_S = 4, MAX_FLIGHT_S = 20; // duration clamp for tiny/huge paths
 const MIN_FRAME_MS = 60;            // frame interval floor (~16 fps cap)
+const AUTO_RESUME_MS = 3000;        // resume delay after the last parameter change
+const AUTO_REPLAY_MS = 5000;        // re-fly delay after landing (longer: let the
+                                    // viewer take in the final coverage first)
 
 // Hypsometric ramp: classic low-green -> tan -> brown -> snowy-peak progression.
 // Returned as an [r,g,b] triple for a normalized elevation t in [0,1].
@@ -680,7 +690,8 @@ function render() {
     }
     const oz = elevAt(z, obs.x, obs.y);
     const fmt = v => Number.isInteger(v) ? v : v.toFixed(1);
-    const who = drone ? (ptB ? `Drone${paused ? ' (paused)' : ''} ${Math.round(tFlight * 100)}% ` +
+    const pauseTag = paused ? (autoResumeT ? ' (paused - resuming soon)' : ' (paused)') : '';
+    const who = drone ? (ptB ? `Drone${pauseTag} ${Math.round(tFlight * 100)}% ` +
                                (replanned ? '→B (replanned)' : 'A→B')
                              : ptA ? 'Drone parked at A' : 'Drone (manual)')
                       : inverse ? 'Target' : 'Observer';
@@ -696,7 +707,7 @@ function render() {
       msg += ` - route ${(totalLen * CELL / 1000).toFixed(2)} km` +
              (totalLen > straight + 0.5 ? ` (straight ${(straight * CELL / 1000).toFixed(2)} km)` : '') +
              (expFrac !== null ? ` - exposed to sensors ${Math.round(100 * expFrac)}%` : '') +
-             ceilNote;
+             ceilNote + (autoReplayT ? ' - replaying soon' : '');
     }
   }
   const OV = 0.42, OVS = 0.30; // overlay opacity: current viewshed / coverage trail
@@ -885,10 +896,37 @@ function stopTicking() {
   if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
   if (timerId) { clearTimeout(timerId); timerId = 0; }
 }
+// Demo-loop timers: auto-resume counts down while a flight is auto-paused,
+// auto-replay while it sits landed at B. Mutually exclusive by construction.
+let autoResumeT = 0, autoReplayT = 0;
+function clearAutoTimers() {
+  if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; }
+  if (autoReplayT) { clearTimeout(autoReplayT); autoReplayT = 0; }
+}
+// Scheduled by replanFlight (never by pauseFlight itself, so neither a manual
+// pause nor an in-progress mast drag counts down); each call restarts the
+// delay, so a slider drag resumes ~3 s after its LAST input event.
+function scheduleAutoResume() {
+  if (!autoResumeEl.checked) return;
+  clearTimeout(autoResumeT);
+  autoResumeT = setTimeout(() => {
+    autoResumeT = 0;
+    if (flying && paused && autoResumeEl.checked) resumeFlight();
+  }, AUTO_RESUME_MS);
+}
+function scheduleAutoReplay() {
+  if (!autoReplayEl.checked || !ptA || !ptB) return;
+  clearTimeout(autoReplayT);
+  autoReplayT = setTimeout(() => {
+    autoReplayT = 0;
+    if (!flying && ptA && ptB && autoReplayEl.checked) startFlight();
+  }, AUTO_REPLAY_MS);
+}
 function cancelFlight() {
   flying = false;
   paused = false;
   stopTicking();
+  clearAutoTimers();
 }
 // Pause halts the animation but keeps the flight (flying stays true), so the
 // route, progress and coverage all survive until resume.
@@ -900,6 +938,7 @@ function pauseFlight() {
 function resumeFlight() {
   if (!flying || !paused) return;
   paused = false;
+  if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; } // manual-click race
   ceilSticky = false; // resuming returns focus to the flight, like launching
   snSticky = false;
   lastTick = performance.now(); // don't count the paused span as elapsed
@@ -972,6 +1011,7 @@ function replanFlight() {
   const path = findPath(z, cur.x, cur.y, ptB.x, ptB.y, hObs, effMaxAlt, exposure);
   if (!path) { // walls fully separate the drone from B: keep the old route
     ceilNote = ' - no route to B under this ceiling (old route kept)';
+    scheduleAutoResume();
     return;
   }
   path[0] = { x: obs.x, y: obs.y, exp: 0 }; // exact position, no snap to cell
@@ -980,6 +1020,7 @@ function replanFlight() {
   replanned = true;
   ceilNote = effMaxAlt > userAlt
     ? ` - ceiling auto-raised to ${Math.round(effMaxAlt)} m for current position` : '';
+  scheduleAutoResume();
 }
 // Position along the planned polyline at a given distance from A (in cells).
 function pathPos(dist) {
@@ -1005,14 +1046,16 @@ function tick() {
   // mid-flight never jumps the drone; read each frame so it applies live.
   tFlight = Math.min(1, tFlight + dt * (+speedEl.value || 1) / durS);
   obs = pathPos(tFlight * totalLen);
+  if (tFlight >= 1) { // landed: settle state before the final render so the
+    flying = false;   // pause button disables on the landing frame itself
+    scheduleAutoReplay(); // drone parks at B, viewshed stays live
+  }
   render(); // one synchronous viewshed per frame - the dominant frame cost
-  if (flying && tFlight < 1) {
+  if (flying) {
     // Frame interval floor: when the viewshed is cheap (short max range),
     // don't burn a full core recomputing at 60 fps.
     const wait = Math.max(0, MIN_FRAME_MS - (performance.now() - now));
     timerId = setTimeout(() => { timerId = 0; rafId = requestAnimationFrame(tick); }, wait);
-  } else {
-    flying = false; // drone parks at B, viewshed stays live
   }
 }
 
@@ -1160,7 +1203,8 @@ document.addEventListener('click', e => {
 });
 replayEl.addEventListener('click', () => { if (ptA && ptB) startFlight(); });
 pauseEl.addEventListener('click', () => {
-  if (paused) resumeFlight(); else { pauseFlight(); render(); }
+  if (paused) resumeFlight();
+  else { pauseFlight(); clearAutoTimers(); render(); } // explicit pause sticks
 });
 // Full factory reset: every control back to its default, scenario wiped.
 // Reuses regen() (flight + sensors + terrain + render), which also rewrites
@@ -1173,6 +1217,7 @@ document.getElementById('reset').addEventListener('click', () => {
   sensorHEl.value = 10; sensorHValEl.textContent = '10 m';
   speedEl.value = 1; speedValEl.textContent = '1×';
   tintEl.checked = true; coverEl.checked = false;
+  autoResumeEl.checked = true; autoReplayEl.checked = true;
   obs = null; ceilHover = false; ceilSticky = false; snHover = false; snSticky = false;
   document.body.dataset.mode = 'drone';
   updateGestures();
@@ -1200,6 +1245,16 @@ modeEl.addEventListener('change', () => {
   render();
 });
 coverEl.addEventListener('change', render);
+autoResumeEl.addEventListener('change', () => {
+  if (!autoResumeEl.checked && autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; }
+  else if (autoResumeEl.checked && flying && paused) scheduleAutoResume();
+  render();
+});
+autoReplayEl.addEventListener('change', () => {
+  if (!autoReplayEl.checked && autoReplayT) { clearTimeout(autoReplayT); autoReplayT = 0; }
+  else if (autoReplayEl.checked && !flying && ptA && ptB && tFlight >= 1) scheduleAutoReplay();
+  render();
+});
 function regen() {
   resetFlight();                          // terrain changes under the path
   sensors = [];                           // and under the masts
@@ -1247,7 +1302,8 @@ function syncHash() {
   const p = ['p=' + presetEl.value, 's=' + seedEl.value, 'm=' + modeEl.value,
              'h=' + hObsEl.value, 't=' + hTgtEl.value, 'r=' + rangeEl.value,
              'a=' + maxAltEl.value, 'sh=' + sensorHEl.value, 'v=' + speedEl.value,
-             'c=' + (tintEl.checked ? 1 : 0) + (coverEl.checked ? 1 : 0)];
+             'c=' + (tintEl.checked ? 1 : 0) + (coverEl.checked ? 1 : 0)
+                  + (autoResumeEl.checked ? 1 : 0) + (autoReplayEl.checked ? 1 : 0)];
   if (sensors.length) p.push('sn=' + sensors.map(s => s.x + ',' + s.y).join(';'));
   if (ptA) p.push('A=' + ptA.x + ',' + ptA.y);
   if (ptB) p.push('B=' + ptB.x + ',' + ptB.y);
@@ -1278,7 +1334,13 @@ function loadHash() {
   if (q.a !== undefined) maxAltEl.value = q.a;
   if (q.sh !== undefined) sensorHEl.value = q.sh;
   if (q.v !== undefined) speedEl.value = q.v;
-  if (q.c) { tintEl.checked = q.c[0] !== '0'; coverEl.checked = q.c[1] === '1'; }
+  if (q.c) {
+    tintEl.checked = q.c[0] !== '0';
+    coverEl.checked = q.c[1] === '1';
+    // Bits 2-3 arrived later; missing means ON, so pre-existing links loop too.
+    autoResumeEl.checked = q.c[2] !== '0';
+    autoReplayEl.checked = q.c[3] !== '0';
+  }
   if (q.sn) sensors = q.sn.split(';').map(s => pt(s, true)).filter(Boolean);
   return {
     A: q.A ? pt(q.A, true) : null,
