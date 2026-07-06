@@ -51,9 +51,9 @@ hash, so any moment can be bookmarked or shared.
   starts flying the moment the viewer raises the ceiling.
 - **Sensors & stealth**: hold the right button to place a sensor mast — it
   follows the cursor and commits on release; right-drag a mast to move it,
-  plain right-click to remove it. While placing, and while hovering or
-  adjusting the mast-height slider, an orange preview shows the union of
-  sensor viewsheds (what the masts see). Planned flights softly avoid terrain
+  plain right-click to remove it. While placing, while hovering a mast on the
+  map, and while hovering or adjusting the mast-height slider, an orange
+  preview shows the union of sensor viewsheds (what the masts see). Planned flights softly avoid terrain
   the sensors can see (cost ×8); exposed route legs draw red, and masts flash
   red live while they have a clear sight line to the drone. Coverage-trail
   toggle accumulates everything seen during a flight.

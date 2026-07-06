@@ -151,8 +151,9 @@
   <b>Sensors</b>: hold the <b>right button</b> to place a sensor mast (yellow triangle) &mdash; it
   follows the cursor with a live orange preview of what the masts see, and commits on release.
   Right-drag an existing mast to move it; a plain right-click on a mast removes it. Mast height is
-  set with the "Sensor h" slider that appears with the first mast; hovering it peeks the coverage
-  preview, changing it pins the preview until the next map click.
+  set with the "Sensor h" slider that appears with the first mast; hovering a mast or the
+  slider peeks the coverage preview, changing the slider pins the preview until the next
+  map click.
   A mast turns <b>red</b> while it currently
   has a clear sight line to the observer/drone/target. With sensors present, planned flights prefer
   terrain the sensors can't see; exposed route legs draw red and the stats show the exposed share.
@@ -593,6 +594,7 @@ maxAltEl.addEventListener('input', () => {
 // events, and every event that re-renders during the preview also changes an
 // input of the field, so caching would buy nothing.
 let snHover = false, snSticky = false;
+let snMastHover = false; // cursor over a mast on the map: same peek as snHover
 const sensorHLabel = sensorHEl.closest('label');
 sensorHLabel.addEventListener('mouseenter', () => { snHover = true; render(); });
 sensorHLabel.addEventListener('mouseleave', () => { snHover = false; render(); });
@@ -690,7 +692,7 @@ function render() {
   // instead of the observer/drone viewshed. A provisional mast being dragged
   // counts as a sensor throughout.
   const snAll = snDrag ? [...sensors, snDrag.cell] : sensors;
-  const showSn = (snHover || snSticky || !!snDrag) && snAll.length > 0;
+  const showSn = (snHover || snSticky || snMastHover || !!snDrag) && snAll.length > 0;
   let snVis = null;
   if (showSn) {
     const t0 = performance.now();
@@ -1302,6 +1304,12 @@ cv.addEventListener('mousemove', e => {
   const c = cellAt(e);
   if (!c) return;
   lastHover = c;
+  // Hovering a mast peeks the sensor coverage union, exactly like hovering
+  // the sensor-h slider (same radius as mast pickup). Suppressed during
+  // drags: piloting keeps its live viewshed, and a mast drag previews anyway.
+  const overMast = !downPx && !snDrag &&
+    sensors.some(s => Math.hypot(s.x - c.x, s.y - c.y) <= 2);
+  if (overMast !== snMastHover) { snMastHover = overMast; render(); }
   const zc = z[c.y * N + c.x];
   let txt = `(${c.x}, ${c.y})  elev ${zc.toFixed(1)} m`;
   if (obs) txt += `  ·  ${(Math.hypot(c.x - obs.x, c.y - obs.y) * CELL / 1000).toFixed(2)} km from observer`;
@@ -1310,6 +1318,7 @@ cv.addEventListener('mousemove', e => {
 });
 cv.addEventListener('mouseleave', () => {
   lastHover = null;
+  if (snMastHover) { snMastHover = false; render(); }
   readoutEl.textContent = 'Hover the map to read elevation.';
   drawProfile();
 });
