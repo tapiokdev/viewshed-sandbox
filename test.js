@@ -2,8 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 const core = html.match(/<script id="core">([\s\S]*?)<\/script>/)[1];
-const { N, CELL, R_EFF, genTerrain, computeViewshed, findPath, segClear, elevAt, losVisible } =
-  (0, eval)('(function(){' + core + ';return { N, CELL, R_EFF, genTerrain, computeViewshed, findPath, segClear, elevAt, losVisible };})()');
+const { N, CELL, R_EFF, genTerrain, computeViewshed, findPath, segClear, elevAt, losVisible, exposureField } =
+  (0, eval)('(function(){' + core + ';return { N, CELL, R_EFF, genTerrain, computeViewshed, findPath, segClear, elevAt, losVisible, exposureField };})()');
 
 let fails = 0;
 const check = (name, cond, detail = '') => {
@@ -216,6 +216,21 @@ for (let k = 0; k < 20; k++) {
 }
 check('los: single-ray agrees with viewshed field', losMis === 0, losMis + '/' + losChecked + ' disagree');
 check('los: beyond max range is not visible', losVisible(flat, 0, 0, 5, 100, 0, 0, 1000) === false);
+
+// ---- exposureField: union of per-sensor viewsheds ----
+check('exposure: no sensors -> null', exposureField(zr42, [], 10, 5, 1e9) === null);
+const snA = { x: 40, y: 60 }, snB = { x: 160, y: 140 };
+const vA = computeViewshed(zr42, snA.x, snA.y, 10, 5, 1e9);
+const vB = computeViewshed(zr42, snB.x, snB.y, 10, 5, 1e9);
+const uOne = exposureField(zr42, [snA], 10, 5, 1e9);
+const uTwo = exposureField(zr42, [snA, snB], 10, 5, 1e9);
+let oneMis = 0, twoMis = 0;
+for (let i = 0; i < N * N; i++) {
+  if (uOne[i] !== (vA[i] === 1 ? 1 : 0)) oneMis++;
+  if (uTwo[i] !== (vA[i] === 1 || vB[i] === 1 ? 1 : 0)) twoMis++;
+}
+check('exposure: single sensor equals its viewshed', oneMis === 0, oneMis + ' mismatches');
+check('exposure: two sensors equal the union', twoMis === 0, twoMis + ' mismatches');
 
 console.log(fails === 0 ? '\nALL TESTS PASSED' : '\n' + fails + ' TEST(S) FAILED');
 process.exit(fails ? 1 : 0);

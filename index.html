@@ -78,7 +78,9 @@
       <input id="maxAlt" type="range" min="0" max="400" value="180" step="10">
       <span class="rangeval" id="maxAltVal">180 m</span></label>
     <label class="drone-only" title="Tint every cell that has been visible at least once during the flight"><input id="cover" type="checkbox"> coverage trail</label>
-    <label class="sensor-only" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch">Sensor h (m) <input id="sensorH" type="number" value="10" step="1"></label>
+    <label class="sensor-only" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch. Drag to preview what the sensors see.">Sensor h
+      <input id="sensorH" type="range" min="0" max="60" value="10" step="1">
+      <span class="rangeval" id="sensorHVal">10 m</span></label>
     <span class="actions">
       <button id="replay" type="button" class="drone-only" title="Re-fly the current A&rarr;B path">replay flight</button>
       <button id="clearSn" type="button" class="sensor-only">clear sensors</button>
@@ -301,6 +303,18 @@ function losVisible(z, x0, y0, h0, x1, y1, h1, maxRange) {
     if ((zi - zEye) / sd > tgtSlope + EPS) return false;
   }
   return true;
+}
+
+// Union of per-sensor viewsheds: 1 where a target at hTgt AGL is visible
+// from at least one sensor (eye at hSensor). Null when there are no sensors.
+function exposureField(z, sensors, hSensor, hTgt, maxRange) {
+  if (!sensors.length) return null;
+  const u = new Uint8Array(N * N);
+  for (const sn of sensors) {
+    const v = computeViewshed(z, sn.x, sn.y, hSensor, hTgt, maxRange);
+    for (let i = 0; i < N * N; i++) if (v[i] === 1) u[i] = 1;
+  }
+  return u;
 }
 
 // ---- drone route planning ----
@@ -830,14 +844,7 @@ function startFlight() {
     elevAt(z, ptA.x, ptA.y) + hObs, elevAt(z, ptB.x, ptB.y) + hObs);
   // Stealth: cells where any sensor mast could see a drone flying at hObs AGL
   // become soft-avoided (union of one viewshed per sensor, computed once here).
-  let exposure = null;
-  if (sensors.length) {
-    exposure = new Uint8Array(N * N);
-    for (const sn of sensors) {
-      const v = computeViewshed(z, sn.x, sn.y, +sensorHEl.value || 0, hObs, +rangeEl.value || 0);
-      for (let i = 0; i < N * N; i++) if (v[i] === 1) exposure[i] = 1;
-    }
-  }
+  const exposure = exposureField(z, sensors, +sensorHEl.value || 0, hObs, +rangeEl.value || 0);
   const path = findPath(z, ptA.x, ptA.y, ptB.x, ptB.y, hObs, effMaxAlt, exposure);
   if (!path) { // impassable wall between A and B under this ceiling
     ptB = null; flightPath = null; obs = { ...ptA };
@@ -1002,7 +1009,7 @@ document.getElementById('reset').addEventListener('click', () => {
   modeEl.value = 'drone';
   hObsEl.value = 5; hTgtEl.value = 0; rangeEl.value = 4000;
   maxAltEl.value = 180; maxAltValEl.textContent = '180 m';
-  sensorHEl.value = 10;
+  sensorHEl.value = 10; sensorHValEl.textContent = '10 m';
   tintEl.checked = true; coverEl.checked = false;
   obs = null; ceilHover = false; ceilSticky = false;
   document.body.dataset.mode = 'drone';
@@ -1046,7 +1053,12 @@ diceEl.addEventListener('click', () => {
   regen();
 });
 tintEl.addEventListener('change', render);
-for (const el of [hObsEl, hTgtEl, rangeEl, sensorHEl]) el.addEventListener('input', render);
+for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render);
+const sensorHValEl = document.getElementById('sensorHVal');
+sensorHEl.addEventListener('input', () => {
+  sensorHValEl.textContent = sensorHEl.value + ' m';
+  render();
+});
 
 // ---- shareable scenario URLs ----
 // Full scenario state lives in the hash, so the current terrain + flight can
@@ -1101,6 +1113,7 @@ const restored = loadHash();
 updateSensorUI();
 updateGestures();
 maxAltValEl.textContent = maxAltEl.value + ' m';
+sensorHValEl.textContent = sensorHEl.value + ' m';
 document.body.dataset.mode = modeEl.value;
 document.getElementById('visLegend').textContent =
   modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
