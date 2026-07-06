@@ -106,6 +106,7 @@
       <div class="swatches">
         <span class="sw" style="background:#46d75a"></span><span id="visLegend">visible from observer</span>
         <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
+        <span class="sw sensor-only" style="background:#ff9628"></span><span class="sensor-only">seen by sensors (preview)</span>
         <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
         <span class="sw" style="background:#3c3c40"></span><span>beyond max range (dimmed)</span>
       </div>
@@ -539,6 +540,15 @@ maxAltEl.addEventListener('input', () => {
   ceilSticky = true;
   render();
 });
+// Sensor visibility preview: same peek/pin pattern for the sensor-h control,
+// showing the union of sensor viewsheds (what the masts see) instead of the
+// observer/drone viewshed. Recomputed per render: render() only runs on
+// events, and every event that re-renders during the preview also changes an
+// input of the field, so caching would buy nothing.
+let snHover = false, snSticky = false;
+const sensorHLabel = sensorHEl.closest('label');
+sensorHLabel.addEventListener('mouseenter', () => { snHover = true; render(); });
+sensorHLabel.addEventListener('mouseleave', () => { snHover = false; render(); });
 const seen = new Uint8Array(N * N); // cells visible at least once this flight
 const DRONE_SPEED = 15;             // ground speed, cells/s (450 m/s map speed)
 const MIN_FLIGHT_S = 4, MAX_FLIGHT_S = 20; // duration clamp for tiny/huge paths
@@ -603,12 +613,29 @@ function setTerrain(preset, seed) {
 function render() {
   const drone = modeEl.value === 'drone';
   const inverse = modeEl.value === 'inverse';
+  // Height of the thing the sensors would detect: the observer/drone in
+  // normal modes, the target in exposure mode (same rule as the live mast
+  // indicator, and as the stealth field at launch).
+  const markerH = inverse ? (+hTgtEl.value || 0) : (+hObsEl.value || 0);
   let vis = null;
   let msg = drone ? 'Drone mode: click to set A, then click to set B and launch.'
           : inverse ? 'Exposure mode: click a target to see everywhere it can be seen from.'
           : 'Click the map to place the observer.';
   if (drone && ptA && !ptB) msg = 'A set - click to set B and launch.';
-  if (obs) {
+  // Sensor preview (sensor-h control hovered, pinned after a change, or a
+  // placement drag in progress): the overlay answers "what do the masts see?"
+  // instead of the observer/drone viewshed.
+  const showSn = (snHover || snSticky) && sensors.length > 0;
+  let snVis = null;
+  if (showSn) {
+    const t0 = performance.now();
+    snVis = exposureField(z, sensors, +sensorHEl.value || 0, markerH, +rangeEl.value || 0);
+    const ms = performance.now() - t0;
+    let nExp = 0;
+    for (let i = 0; i < N * N; i++) if (snVis[i]) nExp++;
+    msg = `Sensor preview: ${sensors.length} mast${sensors.length > 1 ? 's' : ''} at ` +
+          `${+sensorHEl.value || 0} m cover ${(100 * nExp / (N * N)).toFixed(1)}% of the map - ${ms.toFixed(0)} ms`;
+  } else if (obs) {
     const t0 = performance.now();
     // Inverse (exposure) mode swaps the height roles: LOS visibility between
     // two points is reciprocal (the chord-sag form z <= lerp - d(D-d)/2R is
@@ -656,7 +683,13 @@ function render() {
   const d = img.data;
   for (let i = 0; i < N * N; i++) {
     let [r, gg, b] = baseColor(i);
-    if (vis && vis[i] === 1) {          // currently visible: green
+    if (snVis) {                        // sensor preview: orange where seen,
+      if (snVis[i]) {                   // bare terrain elsewhere ("uncovered"
+        r = r * (1 - OV) + 255 * OV;    // is neutral, not hidden)
+        gg = gg * (1 - OV) + 150 * OV;
+        b = b * (1 - OV) + 40 * OV;
+      }
+    } else if (vis && vis[i] === 1) {   // currently visible: green
       r = r * (1 - OV) + 70 * OV; gg = gg * (1 - OV) + 215 * OV; b = b * (1 - OV) + 90 * OV;
     } else if (showSeen && seen[i]) {   // seen earlier in the flight: pale teal
       r = r * (1 - OVS) + 80 * OVS; gg = gg * (1 - OVS) + 195 * OVS; b = b * (1 - OVS) + 205 * OVS;
@@ -705,7 +738,6 @@ function render() {
   // Sensor masts: yellow triangles, turning red while they currently have a
   // clear sight line to the marker (drone/observer at hObs, target at hTgt).
   // One ray per sensor per frame - negligible next to the viewshed.
-  const markerH = inverse ? (+hTgtEl.value || 0) : (+hObsEl.value || 0);
   const snH = +sensorHEl.value || 0;
   for (const sn of sensors) {
     const sees = obs && losVisible(z, sn.x, sn.y, snH, obs.x, obs.y, markerH, +rangeEl.value || 0);
@@ -835,7 +867,8 @@ function resetFlight() {
 }
 function startFlight() {
   cancelFlight();
-  ceilSticky = false; // launching supersedes the pinned ceiling preview
+  ceilSticky = false; // launching supersedes the pinned previews
+  snSticky = false;
   const hObs = +hObsEl.value || 0;
   // The ceiling can never exclude the endpoints: raise it to whatever the
   // higher of A and B needs (the user-requested lower limit).
@@ -921,7 +954,8 @@ let downPx = null, didDrag = false;
 
 cv.addEventListener('pointerdown', e => {
   if (e.button !== 0) return; // right-click is the sensor gesture
-  ceilSticky = false;         // map interaction dismisses the pinned preview
+  ceilSticky = false;         // map interaction dismisses the pinned previews
+  snSticky = false;
   downPx = { x: e.clientX, y: e.clientY };
   didDrag = false;
   cv.setPointerCapture(e.pointerId);
@@ -990,6 +1024,7 @@ function clearAll() {
 clearEl.addEventListener('click', clearAll); // observer/flight only
 clearSnEl.addEventListener('click', () => {
   sensors = [];
+  snSticky = false;
   updateSensorUI();
   render();
 });
@@ -1011,7 +1046,7 @@ document.getElementById('reset').addEventListener('click', () => {
   maxAltEl.value = 180; maxAltValEl.textContent = '180 m';
   sensorHEl.value = 10; sensorHValEl.textContent = '10 m';
   tintEl.checked = true; coverEl.checked = false;
-  obs = null; ceilHover = false; ceilSticky = false;
+  obs = null; ceilHover = false; ceilSticky = false; snHover = false; snSticky = false;
   document.body.dataset.mode = 'drone';
   updateGestures();
   document.getElementById('visLegend').textContent = 'visible from observer';
@@ -1057,6 +1092,7 @@ for (const el of [hObsEl, hTgtEl, rangeEl]) el.addEventListener('input', render)
 const sensorHValEl = document.getElementById('sensorHVal');
 sensorHEl.addEventListener('input', () => {
   sensorHValEl.textContent = sensorHEl.value + ' m';
+  snSticky = true;
   render();
 });
 
