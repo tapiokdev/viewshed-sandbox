@@ -74,7 +74,7 @@
     <label>Observer/drone h (m) <input id="hObs" type="number" value="5" step="0.5"></label>
     <label>Target h (m) <input id="hTgt" type="number" value="0" step="0.5"></label>
     <label>Max range (m) <input id="range" type="number" value="4000" step="500"></label>
-    <label class="drone-only" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need). Drag to preview the impassable walls on the map.">Max alt
+    <label class="drone-only" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need). While planning a route the impassable walls outline in purple on their own; hover or drag here to preview them in full.">Max alt
       <input id="maxAlt" type="range" min="0" max="400" value="180" step="10">
       <span class="rangeval" id="maxAltVal">180 m</span></label>
     <label class="drone-only" title="Flight playback speed; applies live mid-flight without pausing or replanning">Speed
@@ -112,7 +112,7 @@
       <div class="swatches">
         <span class="sw" style="background:#46d75a"></span><span id="visLegend">visible from observer</span>
         <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
-        <span class="sw sensor-only" style="background:#ff9628"></span><span class="sensor-only">seen by sensors (preview)</span>
+        <span class="sw sensor-only" style="background:#ff9628"></span><span class="sensor-only">seen by sensors</span>
         <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
         <span class="sw" style="background:#3c3c40"></span><span>beyond max range (dimmed)</span>
       </div>
@@ -130,9 +130,17 @@
   <b>single ridge</b> &rarr; click west of the ridge for a clean shadow behind it.
   <b>Drone mode</b>: click A then B; the drone flies straight at the set height above local
   ground, and the overlay follows it; the route plans around terrain the drone can't clear
-  under <b>max alt</b>. Changing height, max alt, range or sensors mid-flight <b>pauses</b> the
+  under <b>max alt</b>. While planning (before launch) the map shows those impassable walls
+  as a purple outline and sensor coverage in pale orange on its own &mdash; the green/red
+  visibility overlay arrives with the launch. If no route exists under the ceiling, A and B
+  stay put with a dashed red line marking the blocked leg; every parameter change retries
+  the plan, and the flight takes off by itself ~3&nbsp;s after a route appears (needs
+  <b>auto-resume</b>; otherwise press <b>replay flight</b>).
+  Changing height, max alt, range or sensors mid-flight <b>pauses</b> the
   drone and replans the rest of the route from where it is &mdash; it resumes by itself
-  ~3&nbsp;s after the last change (<b>auto-resume</b>), or press <b>resume</b>. Landed
+  ~3&nbsp;s after the last change (<b>auto-resume</b>), or press <b>resume</b>; if the
+  change walls off B entirely, the drone freezes in place in the same pending state and
+  resumes once a route reappears. Landed
   flights re-fly after 5&nbsp;s (<b>auto-replay</b>), so a shared scenario loops on its
   own; untick the toggles for manual control. A manual <b>pause</b> always sticks, and
   the <b>speed</b> slider (0.1&times;&ndash;1.5&times;) changes playback live without
@@ -537,6 +545,16 @@ let cumLen = [0], totalLen = 0;     // cumulative segment lengths (cells)
 let ceilNote = '';                  // stats note when the ceiling was auto-raised
 let sensors = [];                   // [{x,y}] sensor masts placed by right-drag
 let expFrac = null;                 // exposed fraction of the planned route
+// Route-pending state: the plan origin and B are known but no legal path
+// exists under the current ceiling/sensors. Every replan trigger retries;
+// success adopts the route and counts down to launch/resume. One state, two
+// entry points: a failed launch (origin = A) and a failed mid-flight replan
+// (origin = the drone's frozen position; ptA is kept for replay semantics).
+let routePending = false;
+let pendingFrom = null;             // plan origin while pending, {x, y}
+let pendingResume = false;          // entered mid-flight: success resumes the
+                                    // sortie (coverage kept), not a fresh launch
+let launchT = 0;                    // settle countdown between route-found and takeoff
 // Right-button placement drag in progress: the provisional mast in .cell
 // follows the cursor and commits into sensors on release. .original holds a
 // picked-up existing mast (release without moving = removal, i.e. the plain
@@ -654,6 +672,19 @@ function render() {
           : inverse ? 'Exposure mode: click a target to see everywhere it can be seen from.'
           : 'Click the map to place the observer.';
   if (drone && ptA && !ptB) msg = 'A set - click to set B and launch.';
+  // Route planning (no active flight): nothing placed yet, A awaiting B, or a
+  // pending route. Manual piloting (an observer without A, i.e. a scrub) is
+  // not planning - it keeps its live viewshed. While planning, the viewshed
+  // stays off and the ambient constraint layers below take over; the green/
+  // red overlay arrives with the launch.
+  const planning = drone && (!ptB || routePending) && !(obs && !ptA);
+  if (drone && routePending) {
+    msg = flightPath
+      ? 'Route found - ' + (launchT ? (pendingResume ? 'resuming' : 'launching') + ' soon'
+                                    : 'press replay flight to launch') + ceilNote
+      : 'No route under this ceiling - raise max alt' +
+        (pendingResume ? ' to resume the flight.' : ' (or move B).');
+  }
   // Sensor preview (sensor-h control hovered, pinned after a change, or a
   // placement drag in progress): the overlay answers "what do the masts see?"
   // instead of the observer/drone viewshed. A provisional mast being dragged
@@ -669,7 +700,7 @@ function render() {
     for (let i = 0; i < N * N; i++) if (snVis[i]) nExp++;
     msg = `Sensor preview: ${snAll.length} mast${snAll.length > 1 ? 's' : ''} at ` +
           `${+sensorHEl.value || 0} m cover ${(100 * nExp / (N * N)).toFixed(1)}% of the map - ${ms.toFixed(0)} ms`;
-  } else if (obs) {
+  } else if (obs && !planning) {
     const t0 = performance.now();
     // Inverse (exposure) mode swaps the height roles: LOS visibility between
     // two points is reciprocal (the chord-sag form z <= lerp - d(D-d)/2R is
@@ -716,6 +747,17 @@ function render() {
   // walls the drone can't clear in purple, on top of everything else.
   const showCeil = drone && (ceilHover || ceilSticky);
   const ceilAlt = +maxAltEl.value || 0, ceilH = +hObsEl.value || 0;
+  const ceilBlocked = i => z[i] + ceilH > ceilAlt;
+  // Ambient constraint layers while planning, no hover needed: the ceiling
+  // walls as a thin purple outline (blocked cells with an open 4-neighbor,
+  // so impassable regions read as contours and interiors stay legible) and
+  // the sensor union as a reduced-opacity fill. The hover/pin previews keep
+  // their full-strength look and take precedence.
+  const ambWalls = planning && !showCeil;
+  const ambSn = planning && !snVis && sensors.length
+    ? exposureField(z, sensors, +sensorHEl.value || 0, markerH, +rangeEl.value || 0)
+    : null;
+  const AMBSN = 0.21; // half the full preview opacity
   const d = img.data;
   for (let i = 0; i < N * N; i++) {
     let [r, gg, b] = baseColor(i);
@@ -734,7 +776,19 @@ function render() {
     } else if (vis) {                   // beyond max range: dim - outside the
       r *= 0.45; gg *= 0.45; b *= 0.45; // analysis, and not visible either
     }                                   // no observer: bare terrain everywhere
-    if (showCeil && z[i] + ceilH > ceilAlt) { // drone-impassable wall: purple
+    if (ambSn && ambSn[i]) {            // ambient sensor coverage: pale orange
+      r = r * (1 - AMBSN) + 255 * AMBSN;
+      gg = gg * (1 - AMBSN) + 150 * AMBSN;
+      b = b * (1 - AMBSN) + 40 * AMBSN;
+    }
+    if (ambWalls && ceilBlocked(i)) {   // ambient walls: outline only
+      const wx = i % N, wy = (i / N) | 0;
+      if ((wx > 0 && !ceilBlocked(i - 1)) || (wx < N - 1 && !ceilBlocked(i + 1)) ||
+          (wy > 0 && !ceilBlocked(i - N)) || (wy < N - 1 && !ceilBlocked(i + N))) {
+        r = r * 0.5 + 118 * 0.5; gg = gg * 0.5 + 62 * 0.5; b = b * 0.5 + 190 * 0.5;
+      }
+    }
+    if (showCeil && ceilBlocked(i)) {   // drone-impassable wall: purple
       r = r * 0.35 + 118 * 0.55; gg = gg * 0.35 + 62 * 0.55; b = b * 0.35 + 190 * 0.55;
     }
     d[i * 4] = r; d[i * 4 + 1] = gg; d[i * 4 + 2] = b; d[i * 4 + 3] = 255;
@@ -761,6 +815,16 @@ function render() {
         ctx.strokeStyle = flightPath[i].exp ? '#ff5346' : '#fff';
         ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
       }
+      ctx.setLineDash([]);
+    }
+    if (ptB && !flightPath && routePending && pendingFrom) {
+      // Blocked intent: a thin dashed red line from the plan origin (A, or
+      // the frozen mid-flight position) to B - the route that can't exist.
+      const [x0, y0] = px(pendingFrom), [x1, y1] = px(ptB);
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+      ctx.lineWidth = 3; ctx.strokeStyle = '#0009'; ctx.stroke();
+      ctx.lineWidth = 1.2; ctx.strokeStyle = '#ff5346'; ctx.stroke();
       ctx.setLineDash([]);
     }
     ctx.font = 'bold 13px system-ui, sans-serif';
@@ -797,8 +861,9 @@ function render() {
   }
   statsEl.textContent = msg;
   replayEl.disabled = !(ptA && ptB); // affordance: dimmed until re-flyable
-  pauseEl.disabled = !flying;        // only a live flight can pause/resume
-  pauseEl.textContent = paused ? 'resume' : 'pause';
+  pauseEl.disabled = !flying;        // only a live flight can pause/resume;
+  pauseEl.textContent =              // pending has nothing to resume
+    routePending && !flightPath ? 'no route' : paused ? 'resume' : 'pause';
   drawProfile(); // keeps the cross-section live during flights and scrubs
   queueHash();   // scenario state -> URL (debounced)
 }
@@ -902,6 +967,7 @@ let autoResumeT = 0, autoReplayT = 0;
 function clearAutoTimers() {
   if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; }
   if (autoReplayT) { clearTimeout(autoReplayT); autoReplayT = 0; }
+  if (launchT) { clearTimeout(launchT); launchT = 0; }
 }
 // Scheduled by replanFlight (never by pauseFlight itself, so neither a manual
 // pause nor an in-progress mast drag counts down); each call restarts the
@@ -949,10 +1015,12 @@ function resetFlight() {
   ptA = null; ptB = null; tFlight = 0;
   flightPath = null; cumLen = [0]; totalLen = 0; ceilNote = ''; expFrac = null;
   replanned = false;
+  routePending = false; pendingFrom = null; pendingResume = false;
   seen.fill(0);
 }
 function startFlight() {
   cancelFlight();
+  routePending = false; pendingFrom = null; pendingResume = false;
   ceilSticky = false; // launching supersedes the pinned previews
   snSticky = false;
   const hObs = +hObsEl.value || 0;
@@ -965,10 +1033,12 @@ function startFlight() {
   // become soft-avoided (union of one viewshed per sensor, computed once here).
   const exposure = exposureField(z, sensors, +sensorHEl.value || 0, hObs, +rangeEl.value || 0);
   const path = findPath(z, ptA.x, ptA.y, ptB.x, ptB.y, hObs, effMaxAlt, exposure);
-  if (!path) { // impassable wall between A and B under this ceiling
-    ptB = null; flightPath = null; obs = { ...ptA };
+  if (!path) { // impassable wall between A and B under this ceiling: keep
+    flightPath = null; expFrac = null; ceilNote = '';  // both points and go
+    obs = { ...ptA };                                  // pending - parameter
+    routePending = true;                               // changes retry the plan
+    pendingFrom = { ...ptA }; pendingResume = false;
     render();
-    statsEl.textContent = 'No route under max altitude - raise it (or pick another B). Drone parked at A.';
     return;
   }
   adoptPath(path, !!exposure);
@@ -1002,6 +1072,8 @@ function replanFlight() {
     // relaunch (fresh countdown), so the drone doesn't leap back to A while
     // the user is still mid-adjustment.
     if (autoReplayT) scheduleAutoReplay();
+    // Route pending: this very change may have opened a path - retry.
+    if (routePending) retryPendingRoute();
     return;
   }
   if (!ptB || !flightPath) return;
@@ -1016,9 +1088,11 @@ function replanFlight() {
     elevAt(z, cur.x, cur.y) + hObs, elevAt(z, ptB.x, ptB.y) + hObs);
   const exposure = exposureField(z, sensors, +sensorHEl.value || 0, hObs, +rangeEl.value || 0);
   const path = findPath(z, cur.x, cur.y, ptB.x, ptB.y, hObs, effMaxAlt, exposure);
-  if (!path) { // walls fully separate the drone from B: keep the old route
-    ceilNote = ' - no route to B under this ceiling (old route kept)';
-    scheduleAutoResume();
+  if (!path) { // walls fully separate the drone from B: no honest route left,
+    cancelFlight();  // so freeze at the current (fractional) position and go
+    flightPath = null; expFrac = null; ceilNote = '';  // pending - coverage
+    routePending = true; pendingResume = true;         // persists, it's still
+    pendingFrom = { x: obs.x, y: obs.y };              // the same sortie
     return;
   }
   path[0] = { x: obs.x, y: obs.y, exp: 0 }; // exact position, no snap to cell
@@ -1028,6 +1102,57 @@ function replanFlight() {
   ceilNote = effMaxAlt > userAlt
     ? ` - ceiling auto-raised to ${Math.round(effMaxAlt)} m for current position` : '';
   scheduleAutoResume();
+}
+// Retry the pending plan (origin -> B) after a parameter change. Success
+// adopts the route and starts the settle countdown - never an immediate
+// launch, or the flight would start mid-slider-drag; failure falls back to
+// pure pending (no polyline, countdown cancelled).
+function retryPendingRoute() {
+  const hObs = +hObsEl.value || 0;
+  const from = { x: Math.round(pendingFrom.x), y: Math.round(pendingFrom.y) };
+  const userAlt = +maxAltEl.value || 0;
+  const effMaxAlt = Math.max(userAlt,
+    elevAt(z, from.x, from.y) + hObs, elevAt(z, ptB.x, ptB.y) + hObs);
+  const exposure = exposureField(z, sensors, +sensorHEl.value || 0, hObs, +rangeEl.value || 0);
+  const path = findPath(z, from.x, from.y, ptB.x, ptB.y, hObs, effMaxAlt, exposure);
+  if (!path) {
+    flightPath = null; expFrac = null; ceilNote = '';
+    if (launchT) { clearTimeout(launchT); launchT = 0; }
+    return;
+  }
+  path[0] = { x: pendingFrom.x, y: pendingFrom.y, exp: 0 }; // exact origin, no snap
+  adoptPath(path, !!exposure);
+  ceilNote = effMaxAlt > userAlt
+    ? ` - ceiling auto-raised to ${Math.round(effMaxAlt)} m` : '';
+  scheduleLaunch();
+}
+// Settle countdown before a found route starts flying (~3 s like auto-resume;
+// each retry restarts it, so a slider drag launches after its LAST change).
+// Gated by auto-resume: with it off, the route just shows and waits for an
+// explicit "replay flight" click.
+function scheduleLaunch() {
+  if (!autoResumeEl.checked) return;
+  clearTimeout(launchT);
+  launchT = setTimeout(() => {
+    launchT = 0;
+    if (routePending && flightPath) launchPending();
+  }, AUTO_RESUME_MS);
+}
+// Leave pending and fly the adopted route: a failed launch starts a fresh
+// sortie, a mid-flight recovery resumes the old one (coverage kept, stats
+// read "replanned").
+function launchPending() {
+  routePending = false;
+  const resume = pendingResume;
+  pendingFrom = null; pendingResume = false;
+  ceilSticky = false; // taking off returns focus to the flight
+  snSticky = false;
+  tFlight = 0;
+  if (resume) replanned = true;
+  else { seen.fill(0); replanned = false; }
+  flying = true; paused = false;
+  lastTick = performance.now();
+  tick();
 }
 // Position along the planned polyline at a given distance from A (in cells).
 function pathPos(dist) {
@@ -1208,7 +1333,12 @@ clearSnEl.addEventListener('click', () => {
 document.addEventListener('click', e => {
   if ((obs || ptA) && !e.target.closest('#cv, #controls, #side, #hint')) clearAll();
 });
-replayEl.addEventListener('click', () => { if (ptA && ptB) startFlight(); });
+replayEl.addEventListener('click', () => {
+  // A found pending route launches/resumes as-is (skipping the countdown);
+  // otherwise the usual full re-fly from A.
+  if (routePending && flightPath) { clearAutoTimers(); launchPending(); return; }
+  if (ptA && ptB) startFlight();
+});
 pauseEl.addEventListener('click', () => {
   if (paused) resumeFlight();
   else { pauseFlight(); clearAutoTimers(); render(); } // explicit pause sticks
@@ -1253,8 +1383,13 @@ modeEl.addEventListener('change', () => {
 });
 coverEl.addEventListener('change', render);
 autoResumeEl.addEventListener('change', () => {
-  if (!autoResumeEl.checked && autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; }
-  else if (autoResumeEl.checked && flying && paused) scheduleAutoResume();
+  if (!autoResumeEl.checked) { // also stops a pending route's launch countdown
+    if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; }
+    if (launchT) { clearTimeout(launchT); launchT = 0; }
+  } else {
+    if (flying && paused) scheduleAutoResume();
+    if (routePending && flightPath) scheduleLaunch();
+  }
   render();
 });
 autoReplayEl.addEventListener('change', () => {

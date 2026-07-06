@@ -37,8 +37,18 @@ hash, so any moment can be bookmarked or shared.
   - Switching modes keeps the marked point, reinterpreting its role.
 - **Pathfinding**: a max-altitude ceiling makes tall terrain impassable, and
   the drone plans an A* route around those walls, smoothed into straight legs
-  by string-pulling. Hovering or adjusting the ceiling slider previews the
-  walls in purple. No route → the flight refuses to launch and says why.
+  by string-pulling. While a route is being planned (before launch) the map
+  shows the walls on its own as a purple contour outline, plus sensor coverage
+  as a pale orange fill; the green/red viewshed overlay arrives with the
+  launch. Hovering or adjusting the ceiling / mast-height sliders still
+  previews either layer at full strength. No route under the ceiling → route
+  pending: A and B stay on the map joined by a dashed red line, every
+  parameter change retries the plan, and the flight takes off by itself ~3 s
+  after a route appears (with auto-resume on; otherwise it waits for *replay
+  flight*). A mid-flight change that walls off B freezes the drone in place
+  in the same pending state — coverage intact — and it resumes the sortie
+  once a route reappears. A shared URL can carry an unsolvable scenario that
+  starts flying the moment the viewer raises the ceiling.
 - **Sensors & stealth**: hold the right button to place a sensor mast — it
   follows the cursor and commits on release; right-drag a mast to move it,
   plain right-click to remove it. While placing, and while hovering or
