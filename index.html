@@ -48,7 +48,7 @@
 </head>
 <body>
 <h1>Terrain Viewshed Sandbox
-  <button id="reset" type="button" title="Restore all controls and the terrain to their defaults; removes sensors, observer and flight">reset to defaults</button>
+  <button id="reset" type="button" title="Restore all controls to their defaults and roll a fresh random terrain; removes sensors, observer and flight">reset to defaults</button>
 </h1>
 <div id="controls">
   <div class="ctlrow">
@@ -1166,7 +1166,7 @@ pauseEl.addEventListener('click', () => {
 // Reuses regen() (flight + sensors + terrain + render), which also rewrites
 // the URL hash to the default state.
 document.getElementById('reset').addEventListener('click', () => {
-  presetEl.value = 'ridged'; seedEl.value = 1;
+  presetEl.value = 'ridged'; seedEl.value = rollSeed();
   modeEl.value = 'drone';
   hObsEl.value = 5; hTgtEl.value = 0; rangeEl.value = 4000;
   maxAltEl.value = 180; maxAltValEl.textContent = '180 m';
@@ -1210,8 +1210,9 @@ function regen() {
 }
 presetEl.addEventListener('change', regen);
 seedEl.addEventListener('input', regen);
+const rollSeed = () => 1 + Math.floor(Math.random() * 99999);
 diceEl.addEventListener('click', () => {
-  seedEl.value = 1 + Math.floor(Math.random() * 99999);
+  seedEl.value = rollSeed();
   regen();
 });
 tintEl.addEventListener('change', render);
@@ -1286,6 +1287,11 @@ function loadHash() {
   };
 }
 
+// Fresh terrain on every bare open: the seed starts random and loadHash()
+// overwrites it when the URL carries one - shared links stay reproducible,
+// and since the hash records the rolled seed right away, a refresh keeps
+// the current map while the bare URL always gives a new one.
+seedEl.value = rollSeed();
 const restored = loadHash();
 updateSensorUI();
 updateGestures();

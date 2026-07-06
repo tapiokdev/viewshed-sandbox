@@ -9,7 +9,8 @@ No libraries, no build step, no backend — open `index.html` in a browser.
 open index.html
 ```
 
-Default scenario: procedural ridged mountains, drone mode. Click once to set
+Default scenario: procedural ridged mountains (fresh random seed on every
+bare open; URLs with a seed reproduce their exact terrain), drone mode. Click once to set
 point **A**, click again to set **B** — the drone flies the planned route and
 the visibility overlay follows it. The full scenario state lives in the URL
 hash, so any moment can be bookmarked or shared.
