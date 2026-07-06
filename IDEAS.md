@@ -66,6 +66,12 @@ thinking about where to fly.
   overlay takes over. Hover-peek stays as-is for the full-strength look and for
   other situations.
 - Noise control (the acknowledged worry) — options, roughly in order of appeal:
+  - Don't show the drone viewshed at all until the flight starts. The
+    visibility overlay is the cool *simulation* part, but while choosing a
+    route the interesting layers are the sensor line-of-sight and the purple
+    walls — so during planning show only those, and let the green/red overlay
+    arrive with the launch. This removes the third hue entirely instead of
+    dimming it, and gives the launch a satisfying "simulation begins" moment.
   - Draw the ambient walls as *outlines*: only blocked cells with at least one
     unblocked 4-neighbor get the purple tint. Reads as a contour line around
     impassable regions instead of a filled mass; interiors stay legible.
@@ -73,10 +79,10 @@ thinking about where to fly.
     peeking still "lights up" the full layer.
   - Sensor union probably keeps its fill (it IS an area quantity) but at the
     reduced ambient opacity; full orange on hover/placement as today.
-- The parked observer viewshed (green/red at A) still renders during planning;
-  three overlapping hues is the noisy worst case. If it's too much, precedence
-  during planning could be: walls outline > sensor fill > viewshed — or suppress
-  the red "hidden" tint during planning and keep only green.
+- If the drone viewshed does stay visible during planning, three overlapping
+  hues is the noisy worst case; precedence could be walls outline > sensor
+  fill > viewshed, or suppress just the red "hidden" tint and keep green. But
+  the first option above (no viewshed until launch) sidesteps this entirely.
 - Pairs with idea 1: the ambient walls are what *explain* a pending route — the
   user sees the purple band separating A from B while the stats say "no route".
 
