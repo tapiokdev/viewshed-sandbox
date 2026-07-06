@@ -1,6 +1,6 @@
 ---
 name: verify
-description: How to verify changes to the viewshed analyzer end-to-end (node tests + driving index.html in a headless browser)
+description: How to verify changes to the viewshed sandbox end-to-end (node tests + driving index.html in a headless browser)
 ---
 
 # Verifying changes in this repo

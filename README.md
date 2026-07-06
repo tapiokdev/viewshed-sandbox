@@ -1,6 +1,6 @@
-# Terrain Viewshed Analyzer
+# Terrain Viewshed Sandbox
 
-A self-contained, client-side terrain viewshed analyzer in a single HTML file.
+A self-contained, client-side terrain viewshed sandbox in a single HTML file.
 No libraries, no build step, no backend — open `index.html` in a browser.
 
 ## Quick start
