@@ -37,10 +37,17 @@
      prose change with app state, and letting them size a max-content column
      re-centers the whole app (moving the map under a drag in progress). */
   .statusbar, .helpblock, .flightstrip { width: 0; min-width: 100%; }
-  .mapwell { background: var(--well); border: 1px solid var(--line); border-radius: 3px;
+  .mapwell { display: flex; gap: 8px; align-items: flex-start;
+             background: var(--well); border: 1px solid var(--line); border-radius: 3px;
              padding: 10px; align-self: start; }
   canvas#cv { display: block; image-rendering: pixelated; border: 1px solid var(--line);
               cursor: crosshair; touch-action: none; }
+  /* altimeter: the elevation ramp + flight-ceiling control fused into one
+     vertical instrument on the canvas's right edge (signature element). */
+  .altimeter { position: relative; }
+  #altBar { display: block; border: 1px solid var(--line); border-radius: 2px; touch-action: none; }
+  body[data-mode=drone] #altBar { cursor: ns-resize; }
+  .altimeter:focus-within { outline: 1px solid var(--accent); outline-offset: 2px; }
   /* sidebar sections */
   #panel { display: flex; flex-direction: column; gap: 10px; }
   .panel-sec { background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
@@ -72,8 +79,12 @@
   .segmented .seg:last-child { border-right: none; }
   .segmented .seg:hover:not([aria-pressed=true]) { color: var(--ink); border-color: var(--line); }
   .segmented .seg[aria-pressed=true] { background: var(--accent); color: var(--bg); }
-  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-             overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+  /* Visually-hidden but focusable. !important defeats the input[type=range]
+     min-width so the hidden #maxAlt collapses to 1px and can't intercept
+     altimeter pointer events. */
+  .sr-only { position: absolute; width: 1px !important; height: 1px !important;
+             min-width: 0 !important; padding: 0; margin: -1px; overflow: hidden;
+             clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
   /* Sliders as instrument faders: thin flat track, small rectangular bone
      thumb (no pill, no accent-color reuse of a map hue). */
   input[type=range] { -webkit-appearance: none; appearance: none;
@@ -145,9 +156,6 @@
                   font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .16em; }
   #hint[open] summary { margin-bottom: 6px; }
   /* legend + inspector */
-  #rampBar { display: block; width: 100%; border: 1px solid var(--line); border-radius: 2px; }
-  .rampLabels { display: flex; justify-content: space-between; font: 11px var(--mono);
-                color: var(--muted); margin-top: 3px; }
   .swatches { display: grid; grid-template-columns: 14px 1fr; gap: 5px 8px; align-items: center;
               margin-top: 8px; font-size: 11px; }
   .sw { width: 14px; height: 14px; border-radius: 2px; border: 1px solid #0004; }
@@ -165,7 +173,13 @@
 </header>
 <div class="layout">
 <div class="mapcol">
-  <div class="mapwell"><canvas id="cv" width="600" height="600"></canvas></div>
+  <div class="mapwell">
+    <canvas id="cv" width="600" height="600"></canvas>
+    <div class="altimeter" id="altimeter" title="Altimeter. The ramp is the terrain's elevation range. In drone mode, drag to set the flight ceiling; the purple band is the heights the drone can't clear. Hover to preview those walls on the map.">
+      <canvas id="altBar" width="70" height="600"></canvas>
+      <input id="maxAlt" class="sr-only" type="range" min="0" max="400" value="180" step="10" aria-label="Flight ceiling, max altitude in metres">
+    </div>
+  </div>
   <div id="flightstrip" class="flightstrip drone-only">
     <button id="pause" type="button" title="Pause/resume the current flight; parameter changes mid-flight pause automatically">pause</button>
     <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
@@ -269,11 +283,6 @@
   </section>
   <section class="panel-sec drone-only" id="secFlight">
     <h2>Flight</h2>
-    <label class="row" title="Flight ceiling: planned drone routes go around terrain the drone can't clear at this altitude (auto-raised to whatever A and B need). While planning a route the impassable walls outline in purple on their own; hover or drag here to preview them in full.">
-      <span class="lab peek">Max alt</span>
-      <input id="maxAlt" type="range" min="0" max="400" value="180" step="10">
-      <span class="rangeval" id="maxAltVal">180 m</span>
-    </label>
     <label class="row" title="Flight playback speed; applies live mid-flight without pausing or replanning">
       <span class="lab">Speed</span>
       <input id="speed" type="range" min="0.1" max="1.5" step="0.05" value="0.75">
@@ -283,7 +292,7 @@
     <p class="caption subcap">Demo loop</p>
     <label class="row check" title="Resume automatically ~3 s after the last parameter change pauses a flight; the pause button always pauses for good"><input id="autoResume" type="checkbox" checked> <span>auto-resume</span></label>
     <label class="row check" title="Re-fly A&rarr;B automatically 5 s after landing &mdash; leave on to watch a shared scenario loop"><input id="autoReplay" type="checkbox" checked> <span>auto-replay</span></label>
-    <p class="caption">Hover Max alt to preview the walls the drone can't clear. Pause, replay and progress sit under the map.</p>
+    <p class="caption">Set the flight ceiling on the altimeter beside the map &mdash; drag it, or hover to preview the walls. Pause, replay and progress sit under the map.</p>
   </section>
   <section class="panel-sec sensor-only" id="secSensors">
     <h2>Sensors</h2>
@@ -298,8 +307,7 @@
   <section class="panel-sec" id="secView">
     <h2>View</h2>
     <label class="row check" title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> <span>elevation color</span></label>
-    <canvas id="rampBar" width="264" height="10"></canvas>
-    <div class="rampLabels"><span id="rampLo">0 m</span><span id="rampHi">0 m</span></div>
+    <p class="caption">Elevation ramp is the altimeter beside the map.</p>
     <div class="swatches">
       <span class="sw" style="background:#46d75a"></span><span id="visLegend">visible from observer</span>
       <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
@@ -697,7 +705,6 @@ function updateReadouts() {
   hObsValEl.textContent = hObsEl.value + ' m';
   hTgtValEl.textContent = hTgtEl.value + ' m';
   rangeValEl.textContent = fmtRange(+rangeEl.value || 0);
-  maxAltValEl.textContent = maxAltEl.value + ' m';
   sensorHValEl.textContent = sensorHEl.value + ' m';
   speedValEl.textContent = (+speedEl.value) + '×';
 }
@@ -744,7 +751,6 @@ function updateSensorUI() {
 }
 
 const gesturesEl = document.getElementById('gestures');
-const maxAltValEl = document.getElementById('maxAltVal');
 const modeCaptionEl = document.getElementById('modeCaption');
 const hObsLabelEl = document.getElementById('hObsLabel');
 const hTgtLabelEl = document.getElementById('hTgtLabel');
@@ -773,19 +779,47 @@ for (const seg of modeSegs) seg.addEventListener('click', () => {
 });
 
 // Ceiling preview: the map shows which terrain the drone can't clear
-// (ground + drone h > ceiling) while the max-alt control is hovered, and the
+// (ground + drone h > ceiling) while the altimeter is hovered, and the
 // preview pins after a value change so routes can be designed against the
 // walls - until the next map interaction (click/drag/sensor) or launch.
 let ceilHover = false, ceilSticky = false;
-const maxAltLabel = maxAltEl.closest('label');
-maxAltLabel.addEventListener('mouseenter', () => { ceilHover = true; render(); });
-maxAltLabel.addEventListener('mouseleave', () => { ceilHover = false; render(); });
+const ALT_MAX = 400; // altimeter domain, matches the #maxAlt slider max
+const altimeterEl = document.getElementById('altimeter');
+const altBarEl = document.getElementById('altBar');
+const altCtx = altBarEl.getContext('2d');
+altimeterEl.addEventListener('mouseenter', () => { ceilHover = true; render(); });
+altimeterEl.addEventListener('mouseleave', () => { ceilHover = false; render(); });
+// Any ceiling change - an altimeter drag, or arrow keys on the focused hidden
+// #maxAlt - pins the preview and replans a live flight, all inherited from the
+// input event exactly as the old horizontal slider did.
 maxAltEl.addEventListener('input', () => {
-  maxAltValEl.textContent = maxAltEl.value + ' m';
   ceilSticky = true;
   replanFlight(); // mid-flight: pause + re-route under the new ceiling
   render();
 });
+// Drag the altimeter to set the ceiling (drone mode only). Pointer y maps
+// linearly to 0..ALT_MAX and snaps to the slider's 10 m step; the value is
+// written through #maxAlt so the handler above does the pinning + replanning.
+let altDrag = false;
+function setCeilFromPointer(e) {
+  const r = altBarEl.getBoundingClientRect();
+  const frac = 1 - (e.clientY - r.top) / r.height;
+  const alt = Math.round(Math.max(0, Math.min(ALT_MAX, frac * ALT_MAX)) / 10) * 10;
+  if (String(alt) !== maxAltEl.value) {
+    maxAltEl.value = alt;
+    maxAltEl.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+}
+altBarEl.addEventListener('pointerdown', e => {
+  if (modeEl.value !== 'drone') return;
+  altDrag = true;
+  ceilHover = true;               // dragging implies the wall peek
+  altBarEl.setPointerCapture(e.pointerId);
+  setCeilFromPointer(e);
+});
+altBarEl.addEventListener('pointermove', e => { if (altDrag) setCeilFromPointer(e); });
+altBarEl.addEventListener('pointerup', () => { altDrag = false; });
+altBarEl.addEventListener('pointercancel', () => { altDrag = false; });
 // Sensor visibility preview: same peek/pin pattern for the sensor-h control,
 // showing the union of sensor viewsheds (what the masts see) instead of the
 // observer/drone viewshed. Recomputed per render: render() only runs on
@@ -839,16 +873,51 @@ function baseColor(i) {
   return [c[0] * m, c[1] * m, c[2] * m];
 }
 
-function drawRampLegend() {
-  const rc = document.getElementById('rampBar');
-  const g = rc.getContext('2d');
-  for (let x = 0; x < rc.width; x++) {
-    const c = hypso(x / (rc.width - 1));
-    g.fillStyle = `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
-    g.fillRect(x, 0, 1, rc.height);
+// Altimeter: a vertical instrument mapping 0..ALT_MAX metres bottom-to-top.
+// The hypsometric ramp colours only the terrain's [zMin, zMax] band (neutral
+// wells above/below); in drone mode a purple band marks the heights above the
+// ceiling (the walls) with a thumb at the ceiling, and a white tick marks the
+// current observer/drone eye elevation. Redrawn every render().
+function drawAltimeter() {
+  const W = altBarEl.width, H = altBarEl.height, barW = 26;
+  const clamp = y => Math.max(7, Math.min(H - 7, y));
+  const yFor = alt => H * (1 - Math.max(0, Math.min(ALT_MAX, alt)) / ALT_MAX);
+  altCtx.fillStyle = '#131316'; altCtx.fillRect(0, 0, W, H);
+  for (let y = 0; y < H; y++) {
+    const alt = ALT_MAX * (1 - y / H);
+    if (alt >= zMin && alt <= zMax) {
+      const c = hypso(zMax > zMin ? (alt - zMin) / (zMax - zMin) : 0.5);
+      altCtx.fillStyle = `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+    } else altCtx.fillStyle = '#26262b';
+    altCtx.fillRect(0, y, barW, 1);
   }
-  document.getElementById('rampLo').textContent = Math.round(zMin) + ' m';
-  document.getElementById('rampHi').textContent = Math.round(zMax) + ' m';
+  const drone = modeEl.value === 'drone';
+  const yCeil = drone ? yFor(+maxAltEl.value || 0) : -99;
+  if (drone) {
+    altCtx.fillStyle = 'rgba(118,62,190,0.42)'; // blocked heights above the ceiling
+    altCtx.fillRect(0, 0, barW, yCeil);
+    altCtx.fillStyle = 'rgb(150,110,220)';      // ceiling thumb
+    altCtx.fillRect(0, yCeil - 1.5, barW, 3);
+  }
+  if (obs) {                                    // eye-elevation tick
+    const eyeH = modeEl.value === 'inverse' ? (+hTgtEl.value || 0) : (+hObsEl.value || 0);
+    const yE = yFor(elevAt(z, obs.x, obs.y) + eyeH);
+    altCtx.strokeStyle = '#fff'; altCtx.lineWidth = 1;
+    altCtx.beginPath(); altCtx.moveTo(0, yE + 0.5); altCtx.lineTo(barW, yE + 0.5); altCtx.stroke();
+    altCtx.fillStyle = '#fff';
+    altCtx.beginPath(); altCtx.moveTo(0, yE); altCtx.lineTo(5, yE - 3); altCtx.lineTo(5, yE + 3);
+    altCtx.closePath(); altCtx.fill();
+  }
+  altCtx.textBaseline = 'middle'; altCtx.textAlign = 'left';
+  altCtx.font = '10px ui-monospace, Menlo, monospace';
+  const gx = barW + 5, near = (a, b) => Math.abs(a - b) < 11;
+  altCtx.fillStyle = '#8b897f';                 // terrain range labels
+  if (!near(yFor(zMax), yCeil)) altCtx.fillText(Math.round(zMax) + ' m', gx, clamp(yFor(zMax)));
+  if (!near(yFor(zMin), yCeil)) altCtx.fillText(Math.round(zMin) + ' m', gx, clamp(yFor(zMin)));
+  if (drone) {                                  // ceiling value (accent)
+    altCtx.fillStyle = '#e4dfd0';
+    altCtx.fillText((+maxAltEl.value || 0) + ' m', gx, clamp(yCeil));
+  }
 }
 
 function setTerrain(preset, seed) {
@@ -857,7 +926,7 @@ function setTerrain(preset, seed) {
   zMin = Infinity; zMax = -Infinity;
   for (let i = 0; i < N * N; i++) { if (z[i] < zMin) zMin = z[i]; if (z[i] > zMax) zMax = z[i]; }
   if (zMin === zMax) { zMin -= 1; zMax += 1; } // flat plane: avoid zero range
-  drawRampLegend();
+  // the altimeter (elevation ramp) redraws with the next render()
 }
 
 function render() {
@@ -1068,6 +1137,7 @@ function render() {
   pauseEl.textContent =              // pending has nothing to resume
     routePending && !flightPath ? 'no route' : paused ? 'resume' : 'pause';
   updateFlightStrip(); // progress bar + state chip + countdown slot
+  drawAltimeter();     // elevation ramp + ceiling thumb + eye tick
   drawProfile(); // keeps the cross-section live during flights and scrubs
   queueHash();   // scenario state -> URL (debounced)
 }
@@ -1596,7 +1666,7 @@ clearSnEl.addEventListener('click', () => {
 // it, so clicks landing there are excluded to keep those interactions
 // non-destructive.
 document.addEventListener('click', e => {
-  if ((obs || ptA) && !e.target.closest('#cv, #panel, #hint, #flightstrip')) clearAll();
+  if ((obs || ptA) && !e.target.closest('.mapwell, #panel, #hint, #flightstrip')) clearAll();
 });
 replayEl.addEventListener('click', () => {
   // A found pending route launches/resumes as-is (skipping the countdown);
