@@ -36,7 +36,7 @@
   /* Only the map well sets the column's width: the status sentence and help
      prose change with app state, and letting them size a max-content column
      re-centers the whole app (moving the map under a drag in progress). */
-  .statusbar, .helpblock, #flightstrip { width: 0; min-width: 100%; }
+  .statusbar, .helpblock, .flightstrip { width: 0; min-width: 100%; }
   .mapwell { background: var(--well); border: 1px solid var(--line); border-radius: 3px;
              padding: 10px; align-self: start; }
   canvas#cv { display: block; image-rendering: pixelated; border: 1px solid var(--line);
@@ -116,10 +116,29 @@
   /* a hidden control must not read as an input: Target h leaves in drone mode
      (the field computation forces it to 0 there, see render()) */
   body[data-mode=drone] .tgt-only { display: none; }
+  /* flight strip: transport + progress + countdown, directly under the map */
+  .flightstrip { display: flex; align-items: center; gap: 10px;
+                 background: var(--well); border: 1px solid var(--line); border-radius: 3px;
+                 padding: 6px 10px; }
+  .flightstrip button { flex: none; }
+  .progress { flex: 1; height: 8px; min-width: 60px; background: var(--line);
+              border-radius: 2px; overflow: hidden; }
+  #progFill { height: 100%; width: 0%; background: var(--accent); transition: width .12s linear; }
+  .countdown { flex: none; min-width: 104px; text-align: right;
+               font: 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); }
+  @media (prefers-reduced-motion: reduce) { #progFill { transition: none; } }
   /* status + help under the map */
-  .statusbar { background: var(--well); border: 1px solid var(--line); border-radius: 3px;
+  .statusbar { display: flex; align-items: flex-start; gap: 10px;
+               background: var(--well); border: 1px solid var(--line); border-radius: 3px;
                padding: 7px 10px; font: 12px var(--mono); font-variant-numeric: tabular-nums; }
-  #stats { min-height: 1.2em; }
+  #stats { flex: 1; min-height: 1.2em; }
+  .chip { flex: none; font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .1em;
+          padding: 2px 7px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted);
+          white-space: nowrap; }
+  .chip:empty { display: none; }
+  .chip[data-state=flying] { color: var(--go); border-color: #33493b; }
+  .chip[data-state="route pending"] { color: var(--warn); border-color: #5a5326; }
+  .chip[data-state=paused], .chip[data-state=landed] { color: var(--ink); }
   #gestures { font: 11px var(--mono); color: var(--muted); margin-bottom: 6px; }
   #hint { font-size: 12px; color: var(--muted); line-height: 1.45; max-width: 622px; }
   #hint summary { cursor: pointer; color: var(--ink); user-select: none;
@@ -147,8 +166,16 @@
 <div class="layout">
 <div class="mapcol">
   <div class="mapwell"><canvas id="cv" width="600" height="600"></canvas></div>
-  <div id="flightstrip" class="drone-only"><!-- Phase 3: transport + progress + countdowns --></div>
-  <div class="statusbar"><div id="stats">Click the map to place the observer.</div></div>
+  <div id="flightstrip" class="flightstrip drone-only">
+    <button id="pause" type="button" title="Pause/resume the current flight; parameter changes mid-flight pause automatically">pause</button>
+    <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
+    <div class="progress" role="progressbar" aria-label="Flight progress"><div id="progFill"></div></div>
+    <span class="countdown" id="countdown"></span>
+  </div>
+  <div class="statusbar">
+    <div id="stats">Click the map to place the observer.</div>
+    <span class="chip" id="stateChip"></span>
+  </div>
   <div class="helpblock">
     <div id="gestures"></div>
     <details id="hint">
@@ -256,11 +283,7 @@
     <p class="caption subcap">Demo loop</p>
     <label class="row check" title="Resume automatically ~3 s after the last parameter change pauses a flight; the pause button always pauses for good"><input id="autoResume" type="checkbox" checked> <span>auto-resume</span></label>
     <label class="row check" title="Re-fly A&rarr;B automatically 5 s after landing &mdash; leave on to watch a shared scenario loop"><input id="autoReplay" type="checkbox" checked> <span>auto-replay</span></label>
-    <div class="btnrow">
-      <button id="pause" type="button" title="Pause/resume the current flight; parameter changes mid-flight pause automatically">pause</button>
-      <button id="replay" type="button" title="Re-fly the current A&rarr;B path">replay flight</button>
-    </div>
-    <p class="caption">Hover Max alt to preview the walls the drone can't clear.</p>
+    <p class="caption">Hover Max alt to preview the walls the drone can't clear. Pause, replay and progress sit under the map.</p>
   </section>
   <section class="panel-sec sensor-only" id="secSensors">
     <h2>Sensors</h2>
@@ -1044,6 +1067,7 @@ function render() {
   pauseEl.disabled = !flying;        // only a live flight can pause/resume;
   pauseEl.textContent =              // pending has nothing to resume
     routePending && !flightPath ? 'no route' : paused ? 'resume' : 'pause';
+  updateFlightStrip(); // progress bar + state chip + countdown slot
   drawProfile(); // keeps the cross-section live during flights and scrubs
   queueHash();   // scenario state -> URL (debounced)
 }
@@ -1145,11 +1169,16 @@ function stopTicking() {
 }
 // Demo-loop timers: auto-resume counts down while a flight is auto-paused,
 // auto-replay while it sits landed at B. Mutually exclusive by construction.
+// Each timer also records its deadline (performance.now ms) so the flight
+// strip can show a live countdown; the deadline is display-only and never
+// changes the timer semantics.
 let autoResumeT = 0, autoReplayT = 0;
+let autoResumeAt = 0, autoReplayAt = 0, launchAt = 0;
 function clearAutoTimers() {
   if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; }
   if (autoReplayT) { clearTimeout(autoReplayT); autoReplayT = 0; }
   if (launchT) { clearTimeout(launchT); launchT = 0; }
+  autoResumeAt = autoReplayAt = launchAt = 0;
 }
 // Scheduled by replanFlight (never by pauseFlight itself, so neither a manual
 // pause nor an in-progress mast drag counts down); each call restarts the
@@ -1157,18 +1186,63 @@ function clearAutoTimers() {
 function scheduleAutoResume() {
   if (!autoResumeEl.checked) return;
   clearTimeout(autoResumeT);
+  autoResumeAt = performance.now() + AUTO_RESUME_MS;
   autoResumeT = setTimeout(() => {
-    autoResumeT = 0;
+    autoResumeT = 0; autoResumeAt = 0;
     if (flying && paused && autoResumeEl.checked) resumeFlight();
   }, AUTO_RESUME_MS);
+  armCountdownTicker();
 }
 function scheduleAutoReplay() {
   if (!autoReplayEl.checked || !ptA || !ptB) return;
   clearTimeout(autoReplayT);
+  autoReplayAt = performance.now() + AUTO_REPLAY_MS;
   autoReplayT = setTimeout(() => {
-    autoReplayT = 0;
+    autoReplayT = 0; autoReplayAt = 0;
     if (!flying && ptA && ptB && autoReplayEl.checked) startFlight();
   }, AUTO_REPLAY_MS);
+  armCountdownTicker();
+}
+// ---- flight strip: progress bar, state chip, visible countdowns ----
+const progFillEl = document.getElementById('progFill');
+const countdownEl = document.getElementById('countdown');
+const stateChipEl = document.getElementById('stateChip');
+let countdownTicker = 0; // 250 ms interval; runs only while a countdown is armed
+// Read-only countdown from whichever deadline is armed. Returns true while a
+// deadline is pending, so the ticker can stop itself once nothing is counting.
+function updateCountdown() {
+  const now = performance.now();
+  let deadline = 0, verb = '';
+  if (launchAt) { deadline = launchAt; verb = pendingResume ? 'resuming' : 'launching'; }
+  else if (autoResumeAt) { deadline = autoResumeAt; verb = 'resuming'; }
+  else if (autoReplayAt) { deadline = autoReplayAt; verb = 'replaying'; }
+  countdownEl.textContent = deadline
+    ? `${verb} in ${Math.max(0, (deadline - now) / 1000).toFixed(1)} s` : '';
+  return !!deadline;
+}
+function armCountdownTicker() {
+  if (countdownTicker) return;
+  countdownTicker = setInterval(() => {
+    if (!updateCountdown()) { clearInterval(countdownTicker); countdownTicker = 0; }
+  }, 250);
+}
+// Progress fill + state chip, refreshed every render. Drone mode only: the
+// strip is .drone-only and the chip empties (hides) in the other modes.
+function updateFlightStrip() {
+  const drone = modeEl.value === 'drone';
+  const prog = drone && flightPath && !routePending ? tFlight : 0;
+  progFillEl.style.width = (prog * 100).toFixed(1) + '%';
+  let state = '';
+  if (drone) {
+    if (routePending) state = 'route pending';
+    else if (flying && paused) state = 'paused';
+    else if (flying) state = 'flying';
+    else if (ptA && ptB && tFlight >= 1) state = 'landed';
+    else state = 'planning';
+  }
+  stateChipEl.textContent = state;
+  if (state) stateChipEl.dataset.state = state; else stateChipEl.removeAttribute('data-state');
+  updateCountdown();
 }
 function cancelFlight() {
   flying = false;
@@ -1186,7 +1260,7 @@ function pauseFlight() {
 function resumeFlight() {
   if (!flying || !paused) return;
   paused = false;
-  if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; } // manual-click race
+  if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; autoResumeAt = 0; } // manual-click race
   ceilSticky = false; // resuming returns focus to the flight, like launching
   snSticky = false;
   lastTick = performance.now(); // don't count the paused span as elapsed
@@ -1299,7 +1373,7 @@ function retryPendingRoute() {
   const path = findPath(z, from.x, from.y, ptB.x, ptB.y, hObs, effMaxAlt, exposure);
   if (!path) {
     flightPath = null; expFrac = null; ceilNote = '';
-    if (launchT) { clearTimeout(launchT); launchT = 0; }
+    if (launchT) { clearTimeout(launchT); launchT = 0; launchAt = 0; }
     return;
   }
   path[0] = { x: pendingFrom.x, y: pendingFrom.y, exp: 0 }; // exact origin, no snap
@@ -1315,10 +1389,12 @@ function retryPendingRoute() {
 function scheduleLaunch() {
   if (!autoResumeEl.checked) return;
   clearTimeout(launchT);
+  launchAt = performance.now() + AUTO_RESUME_MS;
   launchT = setTimeout(() => {
-    launchT = 0;
+    launchT = 0; launchAt = 0;
     if (routePending && flightPath) launchPending();
   }, AUTO_RESUME_MS);
+  armCountdownTicker();
 }
 // Leave pending and fly the adopted route: a failed launch starts a fresh
 // sortie, a mid-flight recovery resumes the old one (coverage kept, stats
@@ -1574,8 +1650,8 @@ modeEl.addEventListener('change', () => {
 coverEl.addEventListener('change', render);
 autoResumeEl.addEventListener('change', () => {
   if (!autoResumeEl.checked) { // also stops a pending route's launch countdown
-    if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; }
-    if (launchT) { clearTimeout(launchT); launchT = 0; }
+    if (autoResumeT) { clearTimeout(autoResumeT); autoResumeT = 0; autoResumeAt = 0; }
+    if (launchT) { clearTimeout(launchT); launchT = 0; launchAt = 0; }
   } else {
     if (flying && paused) scheduleAutoResume();
     if (routePending && flightPath) scheduleLaunch();
@@ -1583,7 +1659,7 @@ autoResumeEl.addEventListener('change', () => {
   render();
 });
 autoReplayEl.addEventListener('change', () => {
-  if (!autoReplayEl.checked && autoReplayT) { clearTimeout(autoReplayT); autoReplayT = 0; }
+  if (!autoReplayEl.checked && autoReplayT) { clearTimeout(autoReplayT); autoReplayT = 0; autoReplayAt = 0; }
   else if (autoReplayEl.checked && !flying && ptA && ptB && tFlight >= 1) scheduleAutoReplay();
   render();
 });
