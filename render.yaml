@@ -1,0 +1,16 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Hosts the Terrain Viewshed Sandbox as a static site. The app is a single
+# self-contained index.html (no build step, no backend, no external requests);
+# scenario state lives in the URL hash and is resolved client-side, so no
+# server-side routing/rewrites are needed.
+services:
+  - type: web
+    name: viewshed
+    runtime: static
+    buildCommand: echo "No build step — single static file"
+    staticPublishPath: .
+    pullRequestPreviewsEnabled: true
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
