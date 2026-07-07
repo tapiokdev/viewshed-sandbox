@@ -360,9 +360,10 @@
       <span class="sw" style="background:#46d75a"></span><span id="visLegend">visible from observer</span>
       <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
       <span class="sw sensor-only" style="background:#ff9628"></span><span class="sensor-only">seen by sensors</span>
-      <span class="sw" style="background:#d7423a"></span><span>hidden (blocked / over horizon)</span>
+      <span class="sw" style="background:#d7423a"></span><span id="hiddenLegend">hidden (blocked / over horizon)</span>
       <span class="sw" style="background:#3c3c40"></span><span>beyond max range (dimmed)</span>
     </div>
+    <p class="caption drone-only">Line of sight is reciprocal: green is also where the drone can be seen from (its exposure); red is where it's concealed.</p>
   </details>
   <details class="panel-sec" id="secInspect" open>
     <summary class="sec-head">Inspector</summary>
@@ -804,6 +805,8 @@ const gesturesEl = document.getElementById('gestures');
 const modeCaptionEl = document.getElementById('modeCaption');
 const hObsLabelEl = document.getElementById('hObsLabel');
 const hTgtLabelEl = document.getElementById('hTgtLabel');
+const visLegendEl = document.getElementById('visLegend');
+const hiddenLegendEl = document.getElementById('hiddenLegend');
 const modeSegs = document.querySelectorAll('.seg[data-mode]');
 function updateGestures() {
   const verb = coarse ? 'tap' : 'click';
@@ -821,6 +824,13 @@ function updateGestures() {
                               inverse: 'Observer height (candidates)' }[modeEl.value];
   hTgtLabelEl.textContent = modeEl.value === 'inverse' ? 'Target height (clicked)' : 'Target height';
   for (const seg of modeSegs) seg.setAttribute('aria-pressed', String(seg.dataset.mode === modeEl.value));
+  // Legend labels name what the overlay means per mode. In drone mode the
+  // viewshed is the drone's own line of sight, which by reciprocity is also
+  // its exposure footprint - the .drone-only caption in View spells that out.
+  visLegendEl.textContent = { single: 'visible from observer', drone: "the drone's line of sight",
+                              inverse: 'can see the target' }[modeEl.value];
+  hiddenLegendEl.textContent = modeEl.value === 'drone'
+    ? 'hidden from the drone' : 'hidden (blocked / over horizon)';
 }
 // Segmented mode control: the hidden <select id=mode> stays the state holder,
 // so clicking a segment sets its value and fires change - loadHash, reset and
@@ -1053,7 +1063,7 @@ function render() {
                              : ptA ? 'Drone parked at A' : 'Drone (manual)')
                       : inverse ? 'Target' : 'Observer';
     msg = `${who} at (${fmt(obs.x)}, ${fmt(obs.y)}), ground ${oz.toFixed(0)} m + ${inverse ? (+hTgtEl.value || 0) : (+hObsEl.value || 0)} m. ` +
-          `${inverse ? 'Seen from' : 'Visible'}: ${nVis} of ${nRange} in-range (${(100 * nVis / nRange).toFixed(1)}%) - ${ms.toFixed(0)} ms`;
+          `${drone ? 'In sight' : inverse ? 'Seen from' : 'Visible'}: ${nVis} of ${nRange} in-range (${(100 * nVis / nRange).toFixed(1)}%) - ${ms.toFixed(0)} ms`;
     if (drone && coverEl.checked) {
       let nSeen = 0;
       for (let i = 0; i < N * N; i++) if (seen[i]) nSeen++;
@@ -1787,15 +1797,12 @@ document.getElementById('reset').addEventListener('click', () => {
   autoResumeEl.checked = true; autoReplayEl.checked = true;
   obs = null; ceilHover = false; ceilSticky = false; snHover = false; snSticky = false;
   document.body.dataset.mode = 'drone';
-  updateGestures();
-  document.getElementById('visLegend').textContent = 'visible from observer';
+  updateGestures(); // also relabels the legend for the (drone) mode
   regen();
 });
 modeEl.addEventListener('change', () => {
   document.body.dataset.mode = modeEl.value; // drives drone-only control visibility
-  updateGestures();
-  document.getElementById('visLegend').textContent =
-    modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
+  updateGestures(); // also relabels the legend for the new mode
   // Preserve the marked point across mode switches: an observer becomes a
   // target and vice versa (the role-bound height inputs reinterpret it
   // automatically), and entering drone mode parks the drone there as A.
@@ -1935,11 +1942,9 @@ function loadHash() {
 seedEl.value = rollSeed();
 const restored = loadHash();
 updateSensorUI();
-updateGestures();
+updateGestures(); // labels the legend for the restored mode
 updateReadouts();
 document.body.dataset.mode = modeEl.value;
-document.getElementById('visLegend').textContent =
-  modeEl.value === 'inverse' ? 'can see the target' : 'visible from observer';
 setTerrain(presetEl.value, Math.trunc(+seedEl.value) || 1);
 if (restored && restored.A && modeEl.value === 'drone') {
   ptA = restored.A; obs = { ...ptA };
