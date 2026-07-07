@@ -60,9 +60,12 @@
   .panel-sec > .sec-head::marker { content: ""; }
   .panel-sec[open] > .sec-head { margin-bottom: 8px; }
   @media (min-width: 900px) { .panel-sec > .sec-head { pointer-events: none; } }
-  /* tool switcher (coarse pointers only); reuses .segmented for its look */
+  /* tool switcher (coarse pointers only); reuses .segmented for its look. The
+     compound .toolswitch.coarse-only outranks .segmented's own display:flex,
+     so the switcher still hides on fine pointers regardless of source order. */
   .coarse-only { display: none; }
-  @media (pointer: coarse) { .coarse-only { display: flex; } }
+  .toolswitch.coarse-only { display: none; }
+  @media (pointer: coarse) { .coarse-only, .toolswitch.coarse-only { display: flex; } }
   /* altimeter mobile-fallback bits: hidden on desktop (the altBar shows them) */
   .alt-fallback-label, .alt-fallback-val { display: none; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -166,6 +169,7 @@
   #hint summary { cursor: pointer; color: var(--ink); user-select: none;
                   font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .16em; }
   #hint[open] summary { margin-bottom: 6px; }
+  #hint p { margin: 6px 0; }
   /* legend + inspector */
   .swatches { display: grid; grid-template-columns: 14px 1fr; gap: 5px 8px; align-items: center;
               margin-top: 8px; font-size: 11px; }
@@ -239,41 +243,41 @@
     <details id="hint">
 
   <summary>help &amp; verification tips</summary>
-  Verification: <b>flat plane</b> &rarr; visible disk out to the curvature/refraction horizon
-  &radic;(2&middot;R<sub>eff</sub>&middot;h) &asymp; 5.45&nbsp;km at h&nbsp;=&nbsp;2&nbsp;m &mdash; raise max range to
-  &ge;9000&nbsp;m, then click near a corner (or drop observer height to ~0.5&nbsp;m) so the horizon
-  arc falls inside the 6&times;6&nbsp;km map.
-  <b>single ridge</b> &rarr; click west of the ridge for a clean shadow behind it.
-  <b>Drone mode</b>: click A then B; the drone flies straight at the set height above local
-  ground, and the overlay follows it; the route plans around terrain the drone can't clear
-  under <b>max alt</b>. While planning (before launch) the map shows those impassable walls
-  as a purple outline and sensor coverage in pale orange on its own &mdash; the green/red
-  visibility overlay arrives with the launch. If no route exists under the ceiling, A and B
-  stay put with a dashed red line marking the blocked leg; every parameter change retries
-  the plan, and the flight takes off by itself ~3&nbsp;s after a route appears (needs
-  <b>auto-resume</b>; otherwise press <b>replay flight</b>).
-  Changing height, max alt, range or sensors mid-flight <b>pauses</b> the
-  drone and replans the rest of the route from where it is &mdash; it resumes by itself
-  ~3&nbsp;s after the last change (<b>auto-resume</b>), or press <b>resume</b>; if the
-  change walls off B entirely, the drone freezes in place in the same pending state and
-  resumes once a route reappears. Landed
-  flights re-fly after 5&nbsp;s (<b>auto-replay</b>), so a shared scenario loops on its
-  own; untick the toggles for manual control. A manual <b>pause</b> always sticks, and
-  the <b>speed</b> slider (0.1&times;&ndash;1.5&times;) changes playback live without
-  pausing.
-  In either mode, <b>drag</b> on the map to pilot the observer/drone manually with live visibility.
-  <b>Exposure mode</b> inverts the question: click a target and the green overlay shows every cell an
-  observer (at observer height) could see it from.
-  <b>Sensors</b>: hold the <b>right button</b> to place a sensor mast (yellow triangle) &mdash; it
-  follows the cursor with a live orange preview of what the masts see, and commits on release.
-  Right-drag an existing mast to move it; a plain right-click on a mast removes it. Mast height is
-  set with the "Sensor h" slider that appears with the first mast; hovering a mast or the
-  slider peeks the coverage preview, changing the slider pins the preview until the next
-  map click.
-  A mast turns <b>red</b> while it currently
-  has a clear sight line to the observer/drone/target. With sensors present, planned flights prefer
-  terrain the sensors can't see; exposed route legs draw red and the stats show the exposed share.
-  Sensors persist until the terrain changes or "clear sensors".
+  <p><b>Modes</b> (top of the panel). <b>observer</b> &mdash; click a cell to see what it sees.
+  <b>drone A&rarr;B</b> &mdash; click A then B; the drone flies straight at its set height above
+  local ground and the green/red overlay follows it, routing around terrain it can't clear under
+  the flight ceiling. <b>exposure</b> &mdash; click a target to see everywhere it could be seen
+  <i>from</i>. Switching modes keeps the marked point and reinterprets its role. <b>Drag</b> the
+  map in any mode to pilot the point live.</p>
+  <p><b>The altimeter</b> beside the map is the elevation ramp and, in drone mode, the flight
+  ceiling. Drag it to set the ceiling; the purple band is the heights the drone can't clear and a
+  tick marks the current eye altitude. Hover it to preview those walls on the map. While a route
+  is being planned the walls also outline themselves in purple, and sensor coverage shows in pale
+  orange, on their own &mdash; the viewshed overlay arrives with the launch. On narrow screens the
+  altimeter becomes a horizontal <b>Flight ceiling</b> slider under the map.</p>
+  <p><b>Flight</b>. The strip under the map holds pause/resume, replay, a progress bar and a live
+  countdown; a chip by the status line reads planning / route&nbsp;pending / flying / paused /
+  landed. If no route fits under the ceiling the flight goes <b>route pending</b>: A and B stay
+  joined by a dashed red line, every change retries the plan, and it takes off by itself ~3&nbsp;s
+  after a route appears (<b>auto-resume</b>; otherwise press <b>replay flight</b>). A mid-flight
+  change that walls off B freezes the drone in place &mdash; coverage intact &mdash; until a route
+  reappears. Landed flights re-fly after 5&nbsp;s (<b>auto-replay</b>), so a shared link loops on
+  its own; the <b>speed</b> slider changes playback live, and a manual pause always sticks.</p>
+  <p><b>Sensors</b>. With a mouse, hold the <b>right button</b> to place a mast &mdash; it follows
+  the cursor and commits on release; right-drag a mast to move it, right-click to remove it. On a
+  touch screen, switch the tool above the map to <b>sensors</b>, then tap to place, drag to move,
+  and tap a mast to remove. Hovering a mast or the mast-height slider (tapping a mast on touch)
+  previews what the masts see. Planned flights avoid terrain the sensors can see; exposed legs draw
+  red, and a mast flashes red while it has a clear sight line to the drone. Sensors persist until
+  the terrain changes or <b>clear sensors</b>.</p>
+  <p><b>Sharing</b>. The whole scenario lives in the page URL &mdash; bookmark or send it and it
+  restores exactly, re-launching a flight if A and B are set. A bare open rolls fresh terrain.</p>
+  <p><b>Verification</b>. <b>flat plane</b> &rarr; a visible disk out to the curvature/refraction
+  horizon &radic;(2&middot;R<sub>eff</sub>&middot;h) &asymp; 5.45&nbsp;km at h&nbsp;=&nbsp;2&nbsp;m:
+  raise max range to &ge;9000&nbsp;m and click near a corner (or drop observer height to ~0.5&nbsp;m)
+  so the horizon arc falls inside the 6&times;6&nbsp;km map. <b>single ridge</b> &rarr; click west of
+  the ridge for a clean shadow behind it; a low observer grazes the rounded crest, so bare ground at
+  the top is hidden but a 2&nbsp;m target standing on it is seen.</p>
     </details>
   </div>
 </div>
@@ -341,17 +345,17 @@
   <details class="panel-sec sensor-only" id="secSensors" open>
     <summary class="sec-head">Sensors</summary>
     <label class="row" title="Eye height of the sensor masts; the live indicator reacts immediately, planned routes use the value at launch. Drag to preview what the sensors see.">
-      <span class="lab peek">Sensor h</span>
+      <span class="lab peek">Mast height</span>
       <input id="sensorH" type="range" min="0" max="60" value="10" step="1">
       <span class="rangeval" id="sensorHVal">10 m</span>
     </label>
     <div class="btnrow"><button id="clearSn" type="button">clear sensors</button></div>
-    <p class="caption">Hover a mast or Sensor h to preview what the masts see.</p>
+    <p class="caption">Hover a mast (or this slider) to preview what the masts see.</p>
   </details>
   <details class="panel-sec" id="secView" open>
     <summary class="sec-head">View</summary>
-    <label class="row check" title="Blend an elevation color ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> <span>elevation color</span></label>
-    <p class="caption">Elevation ramp is the altimeter beside the map (desktop).</p>
+    <label class="row check" title="Blend an elevation colour ramp over the hillshade so the terrain reads before you place an observer"><input id="tint" type="checkbox" checked> <span>elevation tint</span></label>
+    <p class="caption">The altimeter beside the map is the elevation ramp (on wider screens).</p>
     <div class="swatches">
       <span class="sw" style="background:#46d75a"></span><span id="visLegend">visible from observer</span>
       <span class="sw" style="background:#5ac0c8"></span><span>seen during flight (coverage)</span>
@@ -802,10 +806,13 @@ const hObsLabelEl = document.getElementById('hObsLabel');
 const hTgtLabelEl = document.getElementById('hTgtLabel');
 const modeSegs = document.querySelectorAll('.seg[data-mode]');
 function updateGestures() {
-  const click = { single: 'click: place observer', drone: 'click: set A, then B',
-                  inverse: 'click: place target' }[modeEl.value];
-  gesturesEl.textContent = `${click}  ·  drag: pilot live  ·  right-drag: place sensor (right-click mast: remove)`;
-  modeCaptionEl.textContent = click;
+  const verb = coarse ? 'tap' : 'click';
+  const act = { single: `${verb}: place observer`, drone: `${verb}: set A, then B`,
+                inverse: `${verb}: place target` }[modeEl.value];
+  gesturesEl.textContent = coarse
+    ? `${act}  ·  drag: pilot live  ·  sensors tool: tap to place a mast, tap a mast to remove`
+    : `${act}  ·  drag: pilot live  ·  right-drag: place a sensor (right-click a mast to remove)`;
+  modeCaptionEl.textContent = act;
   clearEl.textContent = { single: 'clear observer', drone: 'clear flight',
                           inverse: 'clear target' }[modeEl.value];
   // The height inputs swap roles across modes; the labels say which role is
