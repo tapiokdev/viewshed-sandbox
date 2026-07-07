@@ -329,6 +329,14 @@
       <span class="rangeval" id="rangeVal">4 km</span>
     </label>
   </details>
+  <details class="panel-sec" id="secInspect" open>
+    <summary class="sec-head">Inspector</summary>
+    <div id="readout">Hover the map to read elevation.</div>
+    <div id="profBox">
+      <h3>Sightline profile</h3>
+      <canvas id="prof" width="220" height="100"></canvas>
+    </div>
+  </details>
   <details class="panel-sec drone-only" id="secFlight" open>
     <summary class="sec-head">Flight</summary>
     <label class="row" title="Flight playback speed; applies live mid-flight without pausing or replanning">
@@ -364,14 +372,6 @@
       <span class="sw" style="background:#3c3c40"></span><span>beyond max range (dimmed)</span>
     </div>
     <p class="caption drone-only">Line of sight is reciprocal: green is also where the drone can be seen from (its exposure); red is where it's concealed.</p>
-  </details>
-  <details class="panel-sec" id="secInspect" open>
-    <summary class="sec-head">Inspector</summary>
-    <div id="readout">Hover the map to read elevation.</div>
-    <div id="profBox" style="display:none">
-      <h3>Sightline profile</h3>
-      <canvas id="prof" width="220" height="100"></canvas>
-    </div>
   </details>
 </aside>
 </div>
@@ -1207,7 +1207,6 @@ function render() {
 }
 
 // ---- sightline profile inspector ----
-const profBox = document.getElementById('profBox');
 const profCtx = document.getElementById('prof').getContext('2d');
 let lastHover = null; // integer cell under the cursor, null off-map
 
@@ -1216,9 +1215,19 @@ let lastHover = null; // integer cell under the cursor, null off-map
 // eye->target line of sight, and the first blocking sample when hidden.
 // Answers "why is this cell red?" - the map view can't.
 function drawProfile() {
-  if (!obs || !lastHover) { profBox.style.display = 'none'; return; }
-  profBox.style.display = '';
   const W = 220, H = 100;
+  // Keep the scope reserved even when idle so the Inspector's height is stable
+  // (no layout jitter as the pointer enters/leaves the map): draw a muted
+  // placeholder instead of collapsing the box.
+  if (!obs || !lastHover) {
+    profCtx.fillStyle = '#131316'; profCtx.fillRect(0, 0, W, H);
+    profCtx.fillStyle = '#8b897f'; profCtx.font = '11px system-ui, sans-serif';
+    profCtx.textAlign = 'center'; profCtx.textBaseline = 'middle';
+    profCtx.fillText(obs ? 'hover a cell to read the sightline'
+                         : 'place a point, then hover a cell', W / 2, H / 2);
+    profCtx.textAlign = 'left'; profCtx.textBaseline = 'alphabetic';
+    return;
+  }
   profCtx.fillStyle = '#141416'; profCtx.fillRect(0, 0, W, H);
   profCtx.font = '10px system-ui, sans-serif';
   const dx = lastHover.x - obs.x, dy = lastHover.y - obs.y;
