@@ -285,13 +285,13 @@
   <details class="panel-sec" id="secMode" open data-keep-open>
     <summary class="sec-head">Mode</summary>
     <div class="segmented" role="group" aria-label="Analysis mode">
-      <button type="button" class="seg" data-mode="single" aria-pressed="false">observer</button>
       <button type="button" class="seg" data-mode="drone" aria-pressed="true">drone A&rarr;B</button>
+      <button type="button" class="seg" data-mode="single" aria-pressed="false">observer</button>
       <button type="button" class="seg" data-mode="inverse" aria-pressed="false">exposure</button>
     </div>
     <select id="mode" class="sr-only" tabindex="-1" aria-hidden="true">
-      <option value="single">observer (click)</option>
       <option value="drone" selected>drone A&rarr;B</option>
+      <option value="single">observer (click)</option>
       <option value="inverse">exposure (click target)</option>
     </select>
     <p class="caption" id="modeCaption"></p>
