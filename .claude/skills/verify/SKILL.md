@@ -27,8 +27,10 @@ cd <scratchpad> && npm i playwright && npx playwright install chromium
 
 ```js
 const { chromium } = require('playwright');
+const path = require('path');
+const APP = 'file://' + path.resolve('<repo>', 'index.html'); // file:// needs an absolute path
 const page = await (await chromium.launch()).newPage();
-await page.goto('file:///Users/tapiok/projects/gis1/index.html');
+await page.goto(APP);
 ```
 
 Gotchas that matter here:
