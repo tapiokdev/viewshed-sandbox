@@ -1,1 +1,9 @@
+# Local planning notes, not part of the app
 PLAN.local.md
+
+# Per-machine Claude Code settings: contains absolute paths for this checkout
+.claude/settings.local.json
+
+# Editor / OS cruft
+.DS_Store
+node_modules/
